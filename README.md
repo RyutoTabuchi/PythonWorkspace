@@ -1,43 +1,95 @@
-# VBA×Python ワークスペース
+# Python ワークスペース
 
-VBAとPythonを使うプロジェクトを、共通のソース構成・ドキュメント・Git履歴で管理します。作成できるのはVBA×Pythonプロジェクト1種類です。
+WindowsとVS CodeでPythonプロジェクトを開発するための共通基盤です。
+プロジェクトの作成、許可パッケージの管理と導入、共通の開発手順をまとめています。
+新規開発はPython単体で行います。
 
-## 統合プロジェクトの構成
+## フォルダー構成
 
 ```text
-Projects/
-  _Template_Combined/       統合用テンプレート
-  Project 名前/
-    README.md              共通の目的・実行方法
-    requirements.txt       Pythonの依存関係
-    .gitignore
-    .git/                  VBAとPythonの共通Git管理
-    .vscode/settings.json  使用するPythonの設定
-    Pysource/              Pythonコード
-    VBsource/              ブックから出力したVBAソース
-    Sandbox/               本番採用前の試作・検証
-    ブック名.xlsm          必要に応じて配置（既定でGit対象外）
+PythonWorkspace/
+  .github/                 GitHub Copilot向けの共通指示
+  .tools/                  プロジェクト作成・許可パッケージ管理の共通ツール
+  .vscode/                 共通のVS Codeタスクと設定
+  ApprovedPackages/        許可パッケージの正式データと一覧資料
+  Projects/
+    _Template_Python/      プロジェクト作成用テンプレート
+    Project 表示名/        作成したプロジェクト（独立したGitリポジトリ）
+  Reports/                 不具合・保守のレポート
+  SampleDatas/             一時的な検証用サンプルデータの置き場
+  README.md                この文書
 ```
 
-Pythonコードは `Pysource`、VBAソースは `VBsource` に保存します。プロジェクト、README、Git履歴は共通です。
+各プロジェクトの構成は次のとおりです。
 
-## 作成方法
+```text
+Projects/Project 表示名/
+  README.md                目的・実行方法・依存関係
+  requirements.txt         実行用パッケージ
+  requirements-dev.txt     開発用パッケージ
+  .gitignore
+  .git/                    このプロジェクト専用のGitリポジトリ
+  .venv/                   このプロジェクト専用の仮想環境
+  source/                  Pythonコード（実行ファイルは source/main.py）
+  tests/                   自動テスト（automated/）と試作（experiments/）
+  config/ 
+  input/ 
+  output/ 
+  logs/
+```
 
-1. `Workspace.code-workspace` またはワークスペース直下をVS Codeで開きます。
-2. 専用拡張のインストールは不要です。以前の「Workspace Project Git」が入っている場合は、拡張機能一覧から「無効にする（ワークスペース）」を選び、必要に応じてウィンドウを再読み込みしてください。同名の旧タスクが重複するのを防ぎます。他のワークスペースで使う拡張はアンインストールする必要はありません。
-3. 「ターミナル」→「タスクの実行」→「New: VBA×Pythonプロジェクト新規作成」を選びます。
-4. プロジェクト名と、インストール済みPythonのバージョンを入力します。`Sample` なら `Projects/Project Sample` が作成されます。
+プロジェクトごとに独立したGitリポジトリと `.venv` を持ちます。
 
-システムPythonを利用し、仮想環境の作成・パッケージ導入・Excelブック作成はしません。VBAのブックへの取り込みも行いません。Gitは初期化とステージングまで行い、コミットやpushは実行しません。Gitビューへの表示は標準Git拡張機能の自動検出に任せます。表示されない場合は `Developer: Reload Window`、または `Git: リポジトリを開く` で作成先を指定してください。
+## プロジェクトを作成する
 
-UserForm操作には、VS Codeタスク `Excel: UserForm情報をCSV出力（アドイン）` と `Excel: 編集したUserForm CSVをExcelへ反映` を使用できます。必要なアドインの準備と対象範囲は [.tools/UserFormCsvExporter/README.md](.tools/UserFormCsvExporter/README.md) を確認してください。出力タスクはExcelでブックを読み取り、反映タスクはバックアップを作成してブックを変更・保存します。実行前に対象ブックと操作範囲を確認してください。
+1. `Workspace.code-workspace` またはワークスペース直下のフォルダーをVS Codeで開きます。
+2. 「ターミナル」→「タスクの実行」→「Workspace: 新規プロジェクトを作成」を選びます。
+3. 表示に従い、プロジェクト表示名、使用するPython、Python識別名、最低Pythonバージョンを入力します。`Sample` と入力すると `Projects/Project Sample` が作成されます。
 
-標準タスクと同じ処理を、PowerShellから直接実行することもできます。専用拡張によるGitビューへの明示的な登録は行いません。
+作成処理は、`.venv` の作成と `git init -b main` までを行います。パッケージの導入、ステージング、コミット、pushは行いません。作成したプロジェクトがGitビューに表示されない場合は、`Developer: Reload Window` を実行するか、`Git: リポジトリを開く` で作成先を指定してください。
+
+詳しい引数、メッセージ、テストは [.tools/README.md](.tools/README.md) を参照してください。
+
+## パッケージを導入する
+
+導入できるのは、`ApprovedPackages/approved-packages.json` で許可済みのパッケージだけです。許可パッケージの一覧は [ApprovedPackages/approved-packages.md](ApprovedPackages/approved-packages.md) で確認できます。許可パッケージの登録・変更はワークスペース管理者が行います。
+
+1. プロジェクトの `requirements.txt`（実行用）または `requirements-dev.txt`（開発用）へ、`package` または `package==version` の形式で記載します。
+2. 「ターミナル」→「タスクの実行」から、次のいずれかを選びます。対象プロジェクトは一覧から番号で選択します。
+   - `Project: 実行用パッケージを導入`
+   - `Project: 開発用パッケージを導入`
+   - `Project: すべてのパッケージを導入`
+
+`requirements.txt` を直接 `pip install -r` で導入しないでください。許可されていないパッケージが1つでも含まれる場合は、何も導入せずに停止します。
+
+許可パッケージを管理するタスクは次のとおりです。
+
+- `Workspace: 許可パッケージを管理`
+- `Workspace: 許可パッケージ資料を再生成`
+
+## 実行する
+
+通常の実行は、ターミナルからプロジェクト内の `.venv` のPythonを直接実行します。
 
 ```powershell
-& .\.tools\New-Project.ps1 -ProjectName "Sample" -PythonVersion 3.13
+cd ".\Projects\Project 表示名"
+.\.venv\Scripts\python.exe .\source\main.py
 ```
 
-使用できるPythonは `py -0p` で確認できます。通常は親ワークスペースのまま作業し、`Python: Select Interpreter` で使用するPythonを選んでください。子フォルダーの `.vscode/settings.json` は親には適用されません。その設定を使う場合だけ、プロジェクトフォルダーを別ウィンドウで開きます。
+この実行方法は、VS Codeで選択中のインタープリターには依存しません。補完や型解析など、VS Code上で対象プロジェクトの環境が必要な場合は `Python: Select Interpreter` で、`Projects\Project 表示名\.venv\Scripts\python.exe` を選択してください。プロジェクトを切り替えた場合は、必要に応じて選び直します。
 
-作成処理と検証方法の詳細は [.tools/README.md](.tools/README.md)、プロジェクトの開発手順は [Projects/_Template_Combined/README.md](Projects/_Template_Combined/README.md) を参照してください。
+## Gitの構成
+
+ワークスペース直下の親リポジトリと、各プロジェクトのリポジトリは別々のGitリポジトリです。親リポジトリは `Projects/Project */` を管理しません。VS Codeのソース管理に複数のリポジトリが表示されるのは正常です。コミット前に、操作対象のリポジトリ名を必ず確認してください。詳しくは [Git 管理ガイド.md](<Git 管理ガイド.md>) を参照してください。
+
+## SampleDatas
+
+`SampleDatas/` は、一時的な検証用サンプルデータを置く場所です。中身はGit管理されません。実業務データ、個人情報、機密情報、認証情報、顧客情報など、Git管理してはいけないデータは置かないでください。
+
+## 関連ドキュメント
+
+- [新人向け開発手順書](新人向け開発手順書.md)
+- [Git 管理ガイド](<Git 管理ガイド.md>)
+- [Workspace全体ロジック](Workspace全体ロジック.md)
+- [.tools/README.md](.tools/README.md)
+- [プロジェクトテンプレートのREADME](Projects/_Template_Python/README.md)

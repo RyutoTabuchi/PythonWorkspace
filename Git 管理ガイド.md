@@ -1,6 +1,22 @@
 # Git管理ガイド
 
-Gitは、ファイルの変更履歴を記録し、過去の状態を確認したり、複数人で変更を共有したりするためのツールです。このガイドでは、1つのプロジェクトを1つのGitリポジトリとして管理する基本的な手順を説明します。
+Gitは、ファイルの変更履歴を記録し、過去の状態を確認したり、複数人で変更を共有したりするためのツールです。このガイドでは、Gitリポジトリとして管理する基本的な手順と、このワークスペースでの管理上の注意を説明します。
+
+## このワークスペースのGit構成
+
+PythonWorkspaceでは、次の2種類のGitリポジトリを別々に管理します。
+
+| リポジトリ | 場所 | 管理するもの |
+| --- | --- | --- |
+| ワークスペース基盤 | PythonWorkspace直下 | `.github/`、`.tools/`、`.vscode/`、`ApprovedPackages/`、`Projects/_Template_Python/`、`Reports/`、直下の文書など |
+| 各プロジェクト | `Projects/Project 表示名/` | そのプロジェクトのソース、README、依存関係ファイルなど |
+
+基盤のリポジトリは `Projects/Project */` を管理しません。各プロジェクトのリポジトリは、プロジェクト作成時に `git init -b main` で作成されます。
+
+そのため、VS Codeのソース管理に複数のリポジトリが表示される状態は正常です。**コミットする前に、操作対象のリポジトリ名を必ず確認してください。** ターミナルで実行するGitコマンドは、現在のフォルダーが属するリポジトリが対象になります。
+
+リモートは、設定するまではローカルだけで履歴を管理します。
+
 ## 基本用語
 
 | 用語 | 意味 |
@@ -16,20 +32,30 @@ Gitを初めて使うPCでは、コミットに記録する名前とメールア
 ```powershell
 git config --global init.defaultBranch main
 git config --global user.name "あなたの名前"
+git config --global user.email "あなたのメールアドレス"
+```
+
+設定内容は次のコマンドで確認できます。
+
 ```powershell
 git config --global --list
 ```
+
 ## 新しいプロジェクトをGitで管理する
 
+このワークスペースで作成したプロジェクトは、作成時に `git init -b main` まで実行済みです。手順3は不要です。
+
 ### 1. プロジェクトフォルダーを開く
-VS Codeで対象のプロジェクトフォルダーを開き、「ターミナル」から新しいターミナルを開きます。Gitコマンドは、必ずプロジェクトのルートフォルダーで実行してください。
+VS Codeで対象のプロジェクトフォルダーを開き、「ターミナル」から新しいターミナルを開きます。Gitコマンドは、必ず対象リポジトリのルートフォルダーで実行してください。
 
 ```powershell
 Get-Location
+```
 
-表示されたパスがプロジェクトの場所と異なる場合は、実際のパスに置き換えて移動します。
+表示されたパスが対象の場所と異なる場合は、実際のパスに置き換えて移動します。PythonWorkspace直下から、プロジェクトへ移動する例です。
+
 ```powershell
-Set-Location "C:\Users\ユーザー名\Documents\Workspace\プロジェクト名"
+Set-Location ".\Projects\Project 表示名"
 ```
 ### 2. `.gitignore`を用意する
 
@@ -50,6 +76,8 @@ git status
 
 ```powershell
 git add .
+```
+
 ステージされたファイルと差分を確認します。秘密情報や不要なファイルが含まれていないことを確認してください。
 
 ```powershell
@@ -70,10 +98,14 @@ git commit -m "Initial project setup"
 ```powershell
 git remote add origin <リポジトリURL>
 git remote -v
+```
+
 `remote -v`で登録先を確認した後、初回のpushを行います。
 
 ```powershell
 git push -u origin main
+```
+
 `origin`は一般的に使われるリモート名です。`-u`を付けると、以後このブランチの送信先が設定され、通常は`git push`だけで送信できます。
 
 すでにリモートにあるプロジェクトを使う場合は、初期化やリモート登録の代わりにcloneします。
@@ -97,7 +129,7 @@ git status
 
 ```powershell
 git add .
-git add Pysource/main.py
+git add source/main.py
 ```
 
 4. ステージ内容を確認し、コミットします。
@@ -128,6 +160,8 @@ git merge feature/add-export
 
 # 不要になったブランチを削除する
 git branch -d feature/add-export
+```
+
 `feature/add-export`は例です。作業内容が分かる名前に置き換えてください。
 
 ## よくあるトラブル
@@ -156,6 +190,8 @@ git branch -m old-name new-name
 
 ```powershell
 git branch -m master main
+```
+
 ### 直前のコミットメッセージを修正する
 
 ```powershell
