@@ -693,7 +693,7 @@ function Invoke-NewProject {
     Import-Messages -Path (Join-Path $PSScriptRoot 'New-Project.messages.json')
     Assert-TestModeArguments -BoundNames $script:BoundNames -TestModeEnabled $TestMode.IsPresent -Root $TestWorkspaceRoot
 
-    $workspaceRoot = Split-Path -Parent $PSScriptRoot
+    $workspaceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
     $templateRoot = Join-Path $workspaceRoot ('Projects\' + $script:TemplateFolderName)
     if ($TestMode.IsPresent) {
         $projectsRoot = Resolve-TestProjectsRoot -Root $TestWorkspaceRoot

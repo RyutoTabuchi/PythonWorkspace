@@ -23,7 +23,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$workspaceRoot = Split-Path -Parent $PSScriptRoot
+$toolsRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$workspaceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $newProjectScript = Join-Path $PSScriptRoot 'New-Project.ps1'
 $messagesFile = Join-Path $PSScriptRoot 'New-Project.messages.json'
 $templateRoot = Join-Path $workspaceRoot 'Projects\_Template_Python'
@@ -250,8 +251,9 @@ function Invoke-UnitGroup {
         Invoke-Check $g 'Host is Windows PowerShell 5.1 or later' {
             Assert-True ($PSVersionTable.PSVersion.Major -ge 5 -and $PSVersionTable.PSVersion.Minor -ge 1 -or $PSVersionTable.PSVersion.Major -gt 5) 'PowerShell 5.1 or later is required.'
         }
-        Invoke-Check $g 'All .tools\*.ps1 parse without errors in this PowerShell' {
-            foreach ($file in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File) {
+        Invoke-Check $g 'All .tools\NewProject and .tools\ApprovedPackages *.ps1 parse without errors in this PowerShell' {
+            $toolFolders = @('NewProject', 'ApprovedPackages' | ForEach-Object { Join-Path $toolsRoot $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+            foreach ($file in @($toolFolders | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.ps1' -File })) {
                 $text = [System.IO.File]::ReadAllText($file.FullName, (New-Object System.Text.UTF8Encoding($false)))
                 $tokens = $null
                 $errors = $null
@@ -604,11 +606,11 @@ function Invoke-TasksGroup {
     }
     Invoke-Check $g 'tasks.json references existing scripts only' {
         $text = (Get-FileFacts -Path $tasksFile).Text
-        $names = @([regex]::Matches($text, '\.tools\\\\([A-Za-z\-]+\.ps1)') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
-        foreach ($required in @('New-Project.ps1', 'Manage-ApprovedPackage.ps1', 'Update-ApprovedPackagesDocument.ps1', 'Install-Packages.ps1')) {
+        $names = @([regex]::Matches($text, '\.tools\\\\([A-Za-z]+)\\\\([A-Za-z\-]+\.ps1)') | ForEach-Object { $_.Groups[1].Value + '\' + $_.Groups[2].Value } | Select-Object -Unique)
+        foreach ($required in @('NewProject\New-Project.ps1', 'ApprovedPackages\Manage-ApprovedPackage.ps1', 'ApprovedPackages\Update-ApprovedPackagesDocument.ps1', 'ApprovedPackages\Install-Packages.ps1')) {
             Assert-True ($names -contains $required) ('tasks.json does not reference ' + $required)
         }
-        foreach ($name in $names) { Assert-True (Test-Path -LiteralPath (Join-Path $PSScriptRoot $name) -PathType Leaf) ('Referenced script does not exist: ' + $name) }
+        foreach ($name in $names) { Assert-True (Test-Path -LiteralPath (Join-Path $toolsRoot $name) -PathType Leaf) ('Referenced script does not exist: ' + $name) }
     }
 }
 

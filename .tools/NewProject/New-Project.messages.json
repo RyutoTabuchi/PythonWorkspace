@@ -1,7 +1,7 @@
 {
     "Usage": [
         "使用方法:",
-        "  .\\.tools\\New-Project.ps1",
+        "  .\\.tools\\NewProject\\New-Project.ps1",
         "対話形式でプロジェクトを作成します。通常は引数の指定は不要です。",
         "事前指定できる引数: -ProjectDisplayName, -PythonIdentifier, -PythonPath, -MinimumPythonVersion",
         "テスト用の引数（-TestMode 指定時だけ使用できます）: -TestWorkspaceRoot, -SkipConfirmation, -SkipGitInit, -SkipVenv, -VenvFailureAnswer"
@@ -92,7 +92,7 @@
     "GitInitFailed": "警告: Gitの初期化に失敗しました。プロジェクトと .venv は残しています。後で手作業で初期化してください: git -C \"{0}\" init -b main",
     "GitSkipped": "Gitの初期化は行いませんでした（テスト用指定）。",
     "DoneHeader": "プロジェクトを作成しました: {0}",
-    "DoneNoPackages": "パッケージは導入していません。必要なパッケージは、ワークスペース共通の導入ツール .tools\\Install-Packages.ps1 で導入してください。",
+    "DoneNoPackages": "パッケージは導入していません。必要なパッケージは、ワークスペース共通の導入ツール .tools\\ApprovedPackages\\Install-Packages.ps1 で導入してください。",
     "DoneRun": [
         "【実行方法（PythonWorkspace直下から）】",
         "  cd \".\\Projects\\{0}\"",

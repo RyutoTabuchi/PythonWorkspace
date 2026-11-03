@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "name": "pdfplumber",
+      "allowedVersions": [
+        "0.10.3"
+      ],
+      "purpose": "",
+      "status": "approved",
+      "approvedDate": "2026-11-03",
+      "notes": ""
+    },
+    {
+      "name": "playwright",
+      "allowedVersions": [],
+      "purpose": "",
+      "status": "approved",
+      "approvedDate": "2026-11-03",
+      "notes": "許可バージョンの指定なし"
+    },
+    {
+      "name": "pyinstaller",
+      "allowedVersions": [
+        "6.*.*"
+      ],
+      "purpose": "",
+      "status": "approved",
+      "approvedDate": "2026-11-03",
+      "notes": ""
+    },
+    {
+      "name": "pypdf",
+      "allowedVersions": [
+        "6.8.0"
+      ],
+      "purpose": "",
+      "status": "approved",
+      "approvedDate": "2026-11-03",
+      "notes": ""
+    },
+    {
+      "name": "pyperclip",
+      "allowedVersions": [
+        "1.*"
+      ],
+      "purpose": "",
+      "status": "approved",
+      "approvedDate": "2026-11-03",
+      "notes": ""
+    },
+    {
+      "name": "pytest",
+      "allowedVersions": [
+        "8.*.*"
+      ],
+      "purpose": "",
+      "status": "approved",
+      "approvedDate": "2026-11-03",
+      "notes": ""
+    },
+    {
+      "name": "python-pptx",
+      "allowedVersions": [
+        "1.*.*"
+      ],
+      "purpose": "",
+      "status": "approved",
+      "approvedDate": "2026-11-03",
+      "notes": ""
+    },
+    {
+      "name": "pywin32",
+      "allowedVersions": [
+        "312"
+      ],
+      "purpose": "",
+      "status": "approved",
+      "approvedDate": "2026-11-03",
+      "notes": ""
+    }
+  ]
+}
