@@ -1,7 +1,5 @@
 # Project実体は各Project repoで管理する
 Project */
-.tools/UserFormCsvExporter/UserFormCsvExporter.xlam
-ExcelVBE/.tools/UserFormCsvExporter/UserFormCsvExporter.xlam
 
 # サンプルデータの中身はGit管理しない（.gitkeepのみ管理）
 SampleDatas/*
