@@ -3,5 +3,9 @@ Project */
 .tools/UserFormCsvExporter/UserFormCsvExporter.xlam
 ExcelVBE/.tools/UserFormCsvExporter/UserFormCsvExporter.xlam
 
-# サンプルデータはGit管理しない
-SampleDatas/
+# サンプルデータの中身はGit管理しない（.gitkeepのみ管理）
+SampleDatas/*
+!SampleDatas/.gitkeep
+
+# Archiveはバックアップではなく、Git管理しない
+Archive/
