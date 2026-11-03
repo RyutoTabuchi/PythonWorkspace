@@ -665,11 +665,14 @@ function Write-TextFileSafely {
     param(
         [string]$Path,
         [string]$Text,
-        [scriptblock]$Validator
+        [scriptblock]$Validator,
+        [switch]$WithBom
     )
 
     $utf8 = New-Object System.Text.UTF8Encoding($false)
-    $bytes = $utf8.GetBytes($Text)
+    $bodyBytes = $utf8.GetBytes($Text)
+    $bytes = $bodyBytes
+    if ($WithBom.IsPresent) { $bytes = [byte[]](@(0xEF, 0xBB, 0xBF) + @($bodyBytes)) }
     $directory = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
         [void](New-Item -ItemType Directory -Path $directory -ErrorAction Stop)
@@ -762,4 +765,137 @@ function ConvertTo-ApprovedPackagesMarkdown {
         [void]$builder.Append('| ' + ($cells -join ' | ') + ' |' + $nl)
     }
     return $builder.ToString()
+}
+
+# ---------------------------------------------------------------------------
+# pip specifications, requirements updates, and pip freeze parsing (install tool)
+# ---------------------------------------------------------------------------
+
+function Add-OneToDecimalString {
+    param([string]$Digits)
+
+    $chars = $Digits.ToCharArray()
+    for ($i = $chars.Length - 1; $i -ge 0; $i--) {
+        if ($chars[$i] -ceq '9') {
+            $chars[$i] = '0'
+        } else {
+            $chars[$i] = [char]([int]$chars[$i] + 1)
+            return (-join $chars)
+        }
+    }
+    return ('1' + (-join $chars))
+}
+
+function Get-PipRequirementSpec {
+    param(
+        [string]$Name,
+        [object]$Package,
+        [string]$RequestedVersion
+    )
+
+    $result = [pscustomobject]@{ Spec = ''; Mode = '' }
+    if (-not [string]::IsNullOrEmpty($RequestedVersion)) {
+        $result.Spec = $Name + '==' + $RequestedVersion
+        $result.Mode = 'Pinned'
+        return $result
+    }
+    $allowed = @($Package.allowedVersions)
+    if ($allowed.Count -eq 0) {
+        $result.Spec = $Name
+        $result.Mode = 'AnyVersion'
+    } elseif ($allowed.Count -gt 1) {
+        $result.Mode = 'NeedsPin'
+    } elseif (-not $allowed[0].Contains('*')) {
+        $result.Spec = $Name + '==' + $allowed[0]
+        $result.Mode = 'FixedFromList'
+    } else {
+        $numeric = $allowed[0].Substring(0, $allowed[0].IndexOf('.*'))
+        $lower = [string[]]@(ConvertTo-VersionElements -Version $numeric)
+        $upper = [string[]]$lower.Clone()
+        $upper[$upper.Length - 1] = Add-OneToDecimalString -Digits $upper[$upper.Length - 1]
+        $result.Spec = $Name + '>=' + ($lower -join '.') + ',<' + ($upper -join '.')
+        $result.Mode = 'RangeFromList'
+    }
+    return $result
+}
+
+function ConvertTo-UpdatedRequirementsText {
+    param(
+        [string]$Text,
+        [object[]]$Updates
+    )
+
+    $parts = [regex]::Split($Text, '(\r\n|\n|\r)')
+    foreach ($update in @($Updates)) {
+        $index = ($update.LineNumber - 1) * 2
+        if ($index -lt 0 -or $index -ge $parts.Length) { throw 'The requirements line number is out of range.' }
+        $match = [regex]::Match($parts[$index], '^(?<lead>\s*)(?<body>\S+)(?<trail>\s*)\z')
+        if (-not $match.Success -or $match.Groups['body'].Value -cne $update.Name) {
+            throw 'The requirements line does not contain the expected package name.'
+        }
+        $parts[$index] = $match.Groups['lead'].Value + $update.Name + '==' + $update.Version + $match.Groups['trail'].Value
+    }
+    return ($parts -join '')
+}
+
+function Update-RequirementsPins {
+    param(
+        [string]$Path,
+        [object[]]$Updates
+    )
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    $offset = 0
+    if ($hasBom) { $offset = 3 }
+    $text = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($bytes, $offset, $bytes.Length - $offset)
+    $newText = ConvertTo-UpdatedRequirementsText -Text $text -Updates $Updates
+    $expectedUpdates = @($Updates)
+    $validator = {
+        param($tempPath)
+        $read = Read-RequirementsFile -Path $tempPath
+        if ($null -ne $read.ReadErrorCode -or @($read.Problems).Count -gt 0) { throw 'The updated requirements file could not be parsed.' }
+        foreach ($update in $expectedUpdates) {
+            $entry = @($read.Entries | Where-Object { $_.LineNumber -eq $update.LineNumber })
+            if ($entry.Count -ne 1 -or $entry[0].Name -cne $update.Name -or $entry[0].Version -cne $update.Version) {
+                throw 'The updated line does not have the expected content.'
+            }
+        }
+    }.GetNewClosure()
+    Write-TextFileSafely -Path $Path -Text $newText -Validator $validator -WithBom:$hasBom
+}
+
+function ConvertFrom-PipFreezeText {
+    param([string[]]$Lines)
+
+    $map = @{}
+    foreach ($line in @($Lines)) {
+        $match = [regex]::Match(([string]$line).Trim(), '^(?<name>[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)==(?<ver>\S+)\z')
+        if ($match.Success) {
+            $map[(ConvertTo-NormalizedPackageName -Name $match.Groups['name'].Value)] = $match.Groups['ver'].Value
+        }
+    }
+    return $map
+}
+
+function Compare-FreezeSnapshots {
+    param(
+        [hashtable]$Before,
+        [hashtable]$After
+    )
+
+    $changes = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($key in $After.Keys) {
+        if (-not $Before.ContainsKey($key)) {
+            $changes.Add([pscustomobject]@{ Name = $key; Kind = 'Added'; Before = ''; After = $After[$key] })
+        } elseif ($Before[$key] -cne $After[$key]) {
+            $changes.Add([pscustomobject]@{ Name = $key; Kind = 'Changed'; Before = $Before[$key]; After = $After[$key] })
+        }
+    }
+    foreach ($key in $Before.Keys) {
+        if (-not $After.ContainsKey($key)) {
+            $changes.Add([pscustomobject]@{ Name = $key; Kind = 'Removed'; Before = $Before[$key]; After = '' })
+        }
+    }
+    return @($changes.ToArray() | Sort-Object -Property Name)
 }

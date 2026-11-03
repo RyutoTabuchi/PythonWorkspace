@@ -6,7 +6,7 @@
     Uses only temporary files under %TEMP% (created and removed by this test), never installs packages,
     never uses the network, never runs git, and never changes the real ApprovedPackages folder.
     Results are Pass, Fail, or NotReady. The exit code is 1 only when a check Fails.
-    Checks that depend on Install-Packages.ps1 (a later step) are reported as NotReady.
+    Checks that depend on Install-Packages.ps1 use a fake python.exe (compiled in %TEMP%); no real pip runs.
     Requires Windows PowerShell 5.1 or later.
 #>
 [CmdletBinding()]
@@ -20,14 +20,34 @@ $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powe
 
 . (Join-Path $toolsDirectory 'ApprovedPackages.Common.ps1')
 . (Join-Path $toolsDirectory 'Manage-ApprovedPackage.ps1')
+. (Join-Path $toolsDirectory 'Install-Packages.ps1')
 
 $script:TestRequiredKeys = @('ErrorPrefix', 'TestStart', 'TestSummary', 'TestFatal')
 $script:Results = New-Object 'System.Collections.Generic.List[object]'
 $script:CreatedRoots = @()
+$script:FakePythonPath = $null
 $realPaths = Get-ApprovedPackagesPaths
 $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\')
 $jaAnyVersionNote = [regex]::Unescape('\u8a31\u53ef\u30d0\u30fc\u30b8\u30e7\u30f3\u306e\u6307\u5b9a\u306a\u3057')
 $expectedOrder = @('pdfplumber', 'playwright', 'pyinstaller', 'pypdf', 'pyperclip', 'pytest', 'python-pptx', 'pywin32')
+$script:OriginalMessageKeys = @(
+    'ErrorPrefix', 'ErrReadFileNotFound', 'ErrReadInvalidUtf8', 'ErrReadInvalidJson', 'ProblemRootNotObject',
+    'ProblemSchemaVersionMissing', 'ProblemSchemaVersionUnsupported', 'ProblemPackagesNotArray', 'ProblemUnknownField',
+    'ProblemPackageNotObject', 'ProblemFieldMissing', 'ProblemFieldNotString', 'ProblemNameInvalid', 'ProblemNameDuplicate',
+    'ProblemNameDuplicateNormalized', 'ProblemAllowedVersionsNotArray', 'ProblemAllowedVersionInvalid',
+    'ProblemAllowedVersionDuplicate', 'ProblemStatusInvalid', 'ProblemApprovedDateInvalid', 'ProblemApprovedDateMustBeEmpty',
+    'UpdUsage', 'UpdErrTestModeOnly', 'UpdErrTestRootRequired', 'UpdErrTestRootInvalid', 'UpdGenerated', 'UpdUnchanged',
+    'MdNotice', 'MdTitle', 'MdHeaderName', 'MdHeaderVersions', 'MdHeaderStatus', 'MdHeaderApprovedDate', 'MdHeaderPurpose',
+    'MdHeaderNotes', 'MdNoVersions', 'MgrUsage', 'MgrErrTestModeOnly', 'MgrErrTestRootRequired', 'MgrErrTestRootInvalid',
+    'MgrErrActionRequired', 'MgrErrTodayInvalid', 'MgrMenuItems', 'MgrPromptMenu', 'MgrMenuInvalid', 'MgrPromptName',
+    'MgrPromptNameOptional', 'MgrPromptVersions', 'MgrPromptPurpose', 'MgrPromptNotes', 'MgrPromptStatus', 'MgrPromptVersion',
+    'MgrPromptRemoveVersion', 'MgrPromptValue', 'MgrErrNameRequired', 'MgrErrNameFormat', 'MgrErrNameDuplicate',
+    'MgrErrNameNotFound', 'MgrErrStatusInvalid', 'MgrErrVersionInvalid', 'MgrErrVersionDuplicate', 'MgrErrVersionNotFound',
+    'MgrErrControlChar', 'MgrWarnAnyVersion', 'MgrPlanHeader', 'MgrPlanNew', 'MgrPlanChange', 'MgrFieldName',
+    'MgrFieldVersions', 'MgrFieldPurpose', 'MgrFieldStatus', 'MgrFieldApprovedDate', 'MgrFieldNotes', 'MgrEmptyValue',
+    'MgrNoVersions', 'MgrPromptConfirm', 'MgrCancelled', 'MgrNothingToChange', 'MgrSaved', 'MgrDocFailed', 'MgrShowHeader',
+    'MgrShowRow', 'MgrNoPackages', 'MgrDetailTitle', 'MgrCurrentVersions', 'TestStart', 'TestSummary', 'TestFatal'
+)
 $expectedVersions = [ordered]@{
     'pdfplumber'  = @('0.10.3')
     'playwright'  = @()
@@ -143,6 +163,9 @@ function Remove-DataRoot {
     if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { throw "Refusing to delete (marker missing): $root" }
     if ([System.IO.File]::ReadAllText($marker).Trim() -ne $Entry.Guid) { throw "Refusing to delete (marker mismatch): $root" }
     if ((Get-Item -LiteralPath $root -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "Refusing to delete (reparse point): $root" }
+    foreach ($link in @(Get-ChildItem -LiteralPath (Join-Path $root 'Projects') -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint })) {
+        & cmd.exe /c ('rmdir "' + $link.FullName + '"') | Out-Null
+    }
     [System.IO.Directory]::Delete($root, $true)
     $script:CreatedRoots = @($script:CreatedRoots | Where-Object { $_.Path -ne $Entry.Path })
 }
@@ -152,7 +175,8 @@ function Invoke-ToolProcess {
         [string]$ScriptName,
         [string[]]$Arguments,
         [string]$WorkingDirectory,
-        [string]$InputText
+        [string]$InputText,
+        [hashtable]$Environment
     )
 
     $quoted = @($Arguments | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }) -join ' '
@@ -165,6 +189,9 @@ function Invoke-ToolProcess {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     if (-not [string]::IsNullOrEmpty($WorkingDirectory)) { $psi.WorkingDirectory = $WorkingDirectory }
+    if ($null -ne $Environment) {
+        foreach ($key in $Environment.Keys) { $psi.EnvironmentVariables[[string]$key] = [string]$Environment[$key] }
+    }
     $process = [System.Diagnostics.Process]::Start($psi)
     if (-not [string]::IsNullOrEmpty($InputText)) { $process.StandardInput.Write($InputText) }
     $process.StandardInput.Close()
@@ -212,6 +239,7 @@ $toolMessages = $null
 try {
     $toolMessages = Import-ToolMessages -Path $realPaths.MessagesPath -RequiredKeys $script:TestRequiredKeys
     $script:MgrMessages = Import-ToolMessages -Path $realPaths.MessagesPath -RequiredKeys $script:ManageRequiredKeys
+    $script:InstMessages = Import-ToolMessages -Path $realPaths.MessagesPath -RequiredKeys $script:InstallRequiredKeys
 } catch {
     Write-Host $_.Exception.Message -ForegroundColor Red
     exit 1
@@ -975,7 +1003,7 @@ function Invoke-ManageGroup {
 
 function Invoke-ToolsGroup {
     $g = 'Tools'
-    $scripts = @('ApprovedPackages.Common.ps1', 'Manage-ApprovedPackage.ps1', 'Update-ApprovedPackagesDocument.ps1', 'Test-ApprovedPackages.ps1')
+    $scripts = @('ApprovedPackages.Common.ps1', 'Manage-ApprovedPackage.ps1', 'Update-ApprovedPackagesDocument.ps1', 'Install-Packages.ps1', 'Test-ApprovedPackages.ps1')
     Invoke-Check $g 'All tool scripts parse without errors in this PowerShell' {
         foreach ($name in $scripts) {
             $text = [System.IO.File]::ReadAllText((Join-Path $toolsDirectory $name), (New-Object System.Text.UTF8Encoding($false)))
@@ -1018,7 +1046,18 @@ function Invoke-ToolsGroup {
         foreach ($key in $updateKeys) { Assert-True ($names -ccontains $key) ('Missing Update key: ' + $key) }
         Assert-True (@($updateKeys | Where-Object { $_ -like 'Mgr*' -or $_ -like 'Test*' }).Count -eq 0) 'Update must not require keys of other tools.'
         Assert-True (@($script:ManageRequiredKeys | Where-Object { $_ -like 'Upd*' -or $_ -like 'Md*' -or $_ -like 'Test*' }).Count -eq 0) 'Manage must not require keys of other tools.'
-        Assert-True (@($names | Where-Object { $_ -like 'Inst*' }).Count -eq 0) 'Install-Packages keys belong to the later step.'
+        $installText = (Get-FileFacts -Path (Join-Path $toolsDirectory 'Install-Packages.ps1')).Text
+        $installList = [regex]::Match($installText, '(?s)\$script:InstallRequiredKeys = @\((.*?)\r?\n\)').Groups[1].Value
+        $installKeys = @([regex]::Matches($installList, "'([A-Za-z0-9]+)'") | ForEach-Object { $_.Groups[1].Value })
+        Assert-True ($installKeys.Count -gt 80) 'The Install key list is too short.'
+        foreach ($key in $installKeys) { Assert-True ($names -ccontains $key) ('Missing Install key: ' + $key) }
+        Assert-True (@($installKeys | Where-Object { $_ -like 'Mgr*' -or $_ -like 'Upd*' -or $_ -like 'Md*' -or $_ -like 'Test*' }).Count -eq 0) 'Install must not require keys of other tools.'
+        Assert-True (@($updateKeys | Where-Object { $_ -like 'Inst*' }).Count -eq 0 -and @($script:ManageRequiredKeys | Where-Object { $_ -like 'Inst*' }).Count -eq 0) 'Other tools must not require Install keys.'
+        $installNames = @($names | Where-Object { $_ -like 'Inst*' })
+        Assert-True ($installNames.Count -ge 70) 'Too few Install keys.'
+        foreach ($key in $installNames) { Assert-True ($installKeys -ccontains $key) ('An Install key is not required by Install: ' + $key) }
+        Assert-True ($script:OriginalMessageKeys.Count -eq 88) 'The original key list is wrong.'
+        Assert-True ((($names[0..87]) -join ',') -ceq ($script:OriginalMessageKeys -join ',')) 'The original 88 keys changed (order, names, or count).'
     }
     Invoke-Check $g 'Every message key used in the tool sources is declared as required by that tool' {
         $manageText = (Get-FileFacts -Path (Join-Path $toolsDirectory 'Manage-ApprovedPackage.ps1')).Text
@@ -1028,6 +1067,21 @@ function Invoke-ToolsGroup {
         $updateUsed = @([regex]::Matches($updateText, "Get-UpdMsg\s+'([A-Za-z0-9]+)'") | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
         $updateList = [regex]::Match($updateText, '(?s)\$script:UpdateRequiredKeys = @\((.*?)\r?\n\)').Groups[1].Value
         foreach ($key in $updateUsed) { Assert-True ($updateList.Contains("'" + $key + "'")) ('Update uses an undeclared key: ' + $key) }
+        $installText = (Get-FileFacts -Path (Join-Path $toolsDirectory 'Install-Packages.ps1')).Text
+        $installUsed = @([regex]::Matches($installText, "Get-InstMsg\s+'([A-Za-z0-9]+)'") | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+        $installList = [regex]::Match($installText, '(?s)\$script:InstallRequiredKeys = @\((.*?)\r?\n\)').Groups[1].Value
+        foreach ($key in $installUsed) { Assert-True ($installList.Contains("'" + $key + "'")) ('Install uses an undeclared key: ' + $key) }
+        $dynamicInstallKeys = @()
+        foreach ($code in @('Option', 'Url', 'LocalPath', 'Extras', 'Marker', 'InlineComment', 'Operator', 'Format', 'Wildcard', 'UnsupportedVersion', 'EmptyVersion', 'Duplicate', 'DuplicateAcrossFiles')) { $dynamicInstallKeys += ('InstReqProblem' + $code) }
+        foreach ($code in @('NotRegistered', 'StatusPending', 'StatusDeprecated', 'StatusDisabled', 'StatusInvalid', 'VersionUnsupportedFormat', 'VersionNotAllowed', 'NeedsPin')) { $dynamicInstallKeys += ('InstDec' + $code) }
+        foreach ($code in @('Pinned', 'FixedFromList', 'RangeFromList', 'AnyVersion')) { $dynamicInstallKeys += ('InstMode' + $code) }
+        foreach ($code in @('Added', 'Changed', 'Removed')) { $dynamicInstallKeys += ('InstKind' + $code) }
+        foreach ($key in $dynamicInstallKeys) { Assert-True ($installList.Contains("'" + $key + "'")) ('Install does not require the dynamic key: ' + $key) }
+        $commonText = (Get-FileFacts -Path (Join-Path $toolsDirectory 'ApprovedPackages.Common.ps1')).Text
+        $lineProblemBody = [regex]::Match($commonText, '(?s)function Get-RequirementLineProblem \{.*?\r?\n\}').Value
+        $lineCodes = @([regex]::Matches($lineProblemBody, "return '([A-Za-z]+)'") | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+        Assert-True ($lineCodes.Count -ge 10) 'The requirement problem codes were not found.'
+        foreach ($code in $lineCodes) { Assert-True ($installList.Contains("'InstReqProblem" + $code + "'")) ('Install has no message for requirement problem ' + $code) }
     }
     Invoke-Check $g 'Every problem code emitted by Common has a Problem message and is required by Manage and Update' {
         $commonText = (Get-FileFacts -Path (Join-Path $toolsDirectory 'ApprovedPackages.Common.ps1')).Text
@@ -1069,7 +1123,7 @@ function Invoke-ToolsGroup {
     }
     Invoke-Check $g 'Sources contain no pip, git, network, ConvertTo-Json, or execution-policy handling (comments excluded)' {
         $forbiddenCommands = @('pip', 'pip3', 'git', 'python', 'py', 'curl', 'wget', 'Invoke-WebRequest', 'Invoke-RestMethod', 'Start-BitsTransfer', 'ConvertTo-Json', 'Set-ExecutionPolicy', 'Install-Module', 'Install-Package')
-        foreach ($name in @('ApprovedPackages.Common.ps1', 'Manage-ApprovedPackage.ps1', 'Update-ApprovedPackagesDocument.ps1')) {
+        foreach ($name in @('ApprovedPackages.Common.ps1', 'Manage-ApprovedPackage.ps1', 'Update-ApprovedPackagesDocument.ps1', 'Install-Packages.ps1')) {
             $text = [System.IO.File]::ReadAllText((Join-Path $toolsDirectory $name), (New-Object System.Text.UTF8Encoding($false)))
             $errors = $null
             $tokens = [System.Management.Automation.PSParser]::Tokenize($text, [ref]$errors)
@@ -1079,6 +1133,7 @@ function Invoke-ToolsGroup {
                 }
                 if ($token.Type -eq 'String' -or $token.Type -eq 'CommandArgument') {
                     Assert-True ($token.Content -notmatch '(?i)ExecutionPolicy|Bypass|git\s+(add|commit|push|tag|remote)') ($name + ' mentions a forbidden operation in code.')
+                    Assert-True ($token.Content -cnotmatch '^(-U|--(trusted-host|upgrade|index-url|extra-index-url|cert|client-cert|proxy|no-verify|disable-pip-version-check))\b') ($name + ' passes a forbidden pip option: ' + $token.Content)
                 }
             }
         }
@@ -1099,17 +1154,797 @@ function Invoke-ToolsGroup {
 
 function Invoke-ValidateOnlyGroup {
     $g = 'ValidateOnly'
-    $installScript = Join-Path $toolsDirectory 'Install-Packages.ps1'
-    $reason = 'Install-Packages.ps1 is created in a later step; these checks run there.'
-    if (Test-Path -LiteralPath $installScript -PathType Leaf) { $reason = 'Install-Packages.ps1 exists but its checks are not part of this test yet.' }
-    foreach ($item in @(
-            '-ValidateOnly leaves .venv unchanged',
-            '-ValidateOnly leaves requirements files unchanged',
-            '-ValidateOnly leaves the approved list unchanged',
-            '-ValidateOnly leaves the Git state unchanged (checked through file and .git hashes)',
-            '-ValidateOnly leaves installed packages unchanged',
-            '-ValidateOnly shows the install plan without installing')) {
-        Add-NotReady -GroupName $g -CheckName $item -Reason $reason
+    Invoke-Check $g '-ValidateOnly leaves .venv, requirements, the approved list, pip state, and the Git state unchanged and shows the plan' {
+        $s = New-Scenario -RuntimeText "pytest`r`npdfplumber`r`nplaywright`r`n" -DevText "# dev`r`npyinstaller`r`n"
+        try {
+            $before = Get-TreeSnapshot -Path $s.Root.Path
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'All', '-ValidateOnly')
+            Assert-True ($run.ExitCode -eq 0) ('Exit code ' + $run.ExitCode + [Environment]::NewLine + $run.Output)
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $s.Root.Path 'pip.log'))) 'pip (the fake python) was called.'
+            Assert-True ((Get-TreeSnapshot -Path $s.Root.Path) -ceq $before) 'A file under the test workspace changed.'
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $s.Project '.git')) -and -not (Test-Path -LiteralPath (Join-Path $s.Root.Path '.git'))) 'A Git folder was created.'
+            foreach ($spec in @('pytest>=8,<9', 'pdfplumber==0.10.3', 'playwright', 'pyinstaller>=6,<7')) {
+                Assert-True ($run.Output.Contains($spec)) ('The plan does not show: ' + $spec)
+            }
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g '-ValidateOnly with a version-less any-version package shows the warning without prompting (stdin closed)' {
+        $s = New-Scenario -RuntimeText "playwright`r`n"
+        try {
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime', '-ValidateOnly')
+            Assert-True ($run.ExitCode -eq 0) ('Exit code ' + $run.ExitCode)
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $s.Root.Path 'pip.log'))) 'pip was called.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g '-ValidateOnly still stops on every problem (exit code 1) and changes nothing' {
+        $cases = @(
+            @{ Runtime = "notregistered`r`n"; Switch = '' },
+            @{ Runtime = "pytest>=8`r`n"; Switch = '' },
+            @{ Runtime = "pytest==9.0.0`r`n"; Switch = '' },
+            @{ Runtime = "pytest`r`n"; Switch = 'NoVenv' }
+        )
+        foreach ($case in $cases) {
+            if ($case.Switch -ceq 'NoVenv') { $s = New-Scenario -RuntimeText $case.Runtime -NoVenv } else { $s = New-Scenario -RuntimeText $case.Runtime }
+            try {
+                $before = Get-TreeSnapshot -Path $s.Root.Path
+                $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime', '-ValidateOnly')
+                Assert-True ($run.ExitCode -eq 1) ('Expected exit code 1 for [' + $case.Runtime.Trim() + '] but got ' + $run.ExitCode)
+                Assert-True ((Get-TreeSnapshot -Path $s.Root.Path) -ceq $before) 'Files changed.'
+                Assert-True (-not (Test-Path -LiteralPath (Join-Path $s.Root.Path 'pip.log'))) 'pip was called.'
+            } finally { Remove-DataRoot -Entry $s.Root }
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Install tool: fake python, scenarios, and groups
+# ---------------------------------------------------------------------------
+
+$script:FakePythonSource = @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+public static class FakePython
+{
+    static string Env(string name) { return Environment.GetEnvironmentVariable(name); }
+    static string Norm(string name) { return System.Text.RegularExpressions.Regex.Replace(name, "[-_.]+", "-").ToLowerInvariant(); }
+    static void Log(string line)
+    {
+        string path = Env("FAKE_PIP_LOG");
+        if (!string.IsNullOrEmpty(path)) { File.AppendAllText(path, line + "\r\n", new UTF8Encoding(false)); }
+    }
+    static SortedDictionary<string, string[]> LoadState()
+    {
+        SortedDictionary<string, string[]> state = new SortedDictionary<string, string[]>(StringComparer.Ordinal);
+        string path = Env("FAKE_PIP_STATE");
+        if (string.IsNullOrEmpty(path) || !File.Exists(path)) { return state; }
+        foreach (string raw in File.ReadAllLines(path))
+        {
+            int i = raw.IndexOf("==", StringComparison.Ordinal);
+            if (i > 0) { state[Norm(raw.Substring(0, i))] = new string[] { raw.Substring(0, i), raw.Substring(i + 2) }; }
+        }
+        return state;
+    }
+    static void SaveState(SortedDictionary<string, string[]> state)
+    {
+        string path = Env("FAKE_PIP_STATE");
+        if (string.IsNullOrEmpty(path)) { return; }
+        List<string> lines = new List<string>();
+        foreach (KeyValuePair<string, string[]> pair in state) { lines.Add(pair.Value[0] + "==" + pair.Value[1]); }
+        File.WriteAllLines(path, lines.ToArray(), new UTF8Encoding(false));
+    }
+    static string Lookup(string file, string name)
+    {
+        if (string.IsNullOrEmpty(file) || !File.Exists(file)) { return null; }
+        foreach (string raw in File.ReadAllLines(file))
+        {
+            int i = raw.IndexOf('=');
+            if (i > 0 && Norm(raw.Substring(0, i)) == Norm(name)) { return raw.Substring(i + 1); }
+        }
+        return null;
+    }
+    static void AddTransitive(SortedDictionary<string, string[]> state, string parent)
+    {
+        string path = Env("FAKE_PIP_TRANSITIVE");
+        if (string.IsNullOrEmpty(path) || !File.Exists(path)) { return; }
+        foreach (string raw in File.ReadAllLines(path))
+        {
+            int c = raw.IndexOf(':');
+            if (c <= 0 || Norm(raw.Substring(0, c)) != Norm(parent)) { continue; }
+            string dep = raw.Substring(c + 1);
+            int e = dep.IndexOf("==", StringComparison.Ordinal);
+            if (e > 0) { state[Norm(dep.Substring(0, e))] = new string[] { Norm(dep.Substring(0, e)), dep.Substring(e + 2) }; }
+        }
+    }
+    public static int Main(string[] args)
+    {
+        Log("ARGS|" + string.Join("|", args));
+        string stateFile = Env("FAKE_PIP_STATE");
+        if (args.Length >= 3 && args[0] == "-m" && args[1] == "pip" && args[2] == "freeze")
+        {
+            string freezeMode = Env("FAKE_PIP_FREEZE_MODE");
+            if (freezeMode == "fail") { Console.Error.WriteLine("ERROR: fake freeze failure"); return 1; }
+            if (freezeMode == "fail-after-install" && stateFile != null && File.Exists(stateFile + ".installed")) { Console.Error.WriteLine("ERROR: fake freeze failure after install"); return 1; }
+            foreach (KeyValuePair<string, string[]> pair in LoadState()) { Console.WriteLine(pair.Value[0] + "==" + pair.Value[1]); }
+            return 0;
+        }
+        if (args.Length >= 3 && args[0] == "-m" && args[1] == "pip" && args[2] == "install")
+        {
+            string mode = Env("FAKE_PIP_MODE");
+            if (mode == null) { mode = "ok"; }
+            if (stateFile != null) { File.WriteAllText(stateFile + ".installed", "1"); }
+            if (mode == "fail") { Console.Error.WriteLine("ERROR: fake pip failure"); return 1; }
+            SortedDictionary<string, string[]> state = LoadState();
+            for (int index = 3; index < args.Length; index++)
+            {
+                string spec = args[index];
+                int cut = spec.IndexOfAny(new char[] { '=', '<', '>', '~', '!' });
+                string name = cut > 0 ? spec.Substring(0, cut) : spec;
+                string version = null;
+                if (cut > 0 && spec.Substring(cut).StartsWith("==", StringComparison.Ordinal)) { version = spec.Substring(cut + 2); }
+                if (version == null) { version = Lookup(Env("FAKE_PIP_RESOLVE"), name); }
+                if (version == null) { version = "1.0.0"; }
+                if (mode == "fail-partial" && index == 4) { SaveState(state); Console.Error.WriteLine("ERROR: fake partial failure"); return 1; }
+                if (!(mode == "skip-record" && index == 3))
+                {
+                    state[Norm(name)] = new string[] { Norm(name), version };
+                    AddTransitive(state, name);
+                }
+                Console.WriteLine("Installing " + name + " " + version);
+            }
+            SaveState(state);
+            return 0;
+        }
+        Console.Error.WriteLine("fake python: unsupported arguments");
+        return 2;
+    }
+}
+'@
+
+function Get-FakePython {
+    if ($null -ne $script:FakePythonPath -and (Test-Path -LiteralPath $script:FakePythonPath -PathType Leaf)) { return $script:FakePythonPath }
+    $holder = New-DataRoot
+    $path = Join-Path $holder.Path 'python.exe'
+    $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
+    $options = New-Object System.CodeDom.Compiler.CompilerParameters
+    $options.GenerateExecutable = $true
+    [void]$options.ReferencedAssemblies.Add('System.dll')
+    $options.OutputAssembly = $path
+    $options.CompilerOptions = '/nologo'
+    $compiled = $provider.CompileAssemblyFromSource($options, $script:FakePythonSource)
+    if ($compiled.Errors.HasErrors) {
+        throw ('Could not compile the fake python: ' + (($compiled.Errors | ForEach-Object { $_.ErrorText }) -join '; '))
+    }
+    $script:FakePythonPath = $path
+    return $path
+}
+
+function New-InstallRoot {
+    $entry = New-DataRoot
+    $ascii = New-Object System.Text.ASCIIEncoding
+    [System.IO.File]::WriteAllText((Join-Path $entry.Path '.install-packages-test-root'), $entry.Guid, $ascii)
+    [void](New-Item -ItemType Directory -Path (Join-Path $entry.Path 'Projects'))
+    [void](New-Item -ItemType Directory -Path (Join-Path $entry.Path 'ApprovedPackages'))
+    Copy-Item -LiteralPath $realPaths.JsonPath -Destination (Join-Path $entry.Path 'ApprovedPackages\approved-packages.json')
+    return $entry
+}
+
+function ConvertTo-TextBytes {
+    param([string]$Text, [switch]$Bom)
+
+    $body = (New-Object System.Text.UTF8Encoding($false)).GetBytes($Text)
+    if ($Bom.IsPresent) { return [byte[]](@(0xEF, 0xBB, 0xBF) + @($body)) }
+    return [byte[]]$body
+}
+
+function New-TestProject {
+    param(
+        [object]$Root,
+        [string]$FolderName,
+        [byte[]]$RuntimeBytes,
+        [byte[]]$DevBytes,
+        [switch]$NoVenv
+    )
+
+    $dir = Join-Path $Root.Path ('Projects\' + $FolderName)
+    [void](New-Item -ItemType Directory -Path $dir)
+    if (-not $NoVenv.IsPresent) {
+        $scripts = Join-Path $dir '.venv\Scripts'
+        [void](New-Item -ItemType Directory -Path $scripts -Force)
+        Copy-Item -LiteralPath (Get-FakePython) -Destination (Join-Path $scripts 'python.exe')
+    }
+    if ($null -ne $RuntimeBytes) { [System.IO.File]::WriteAllBytes((Join-Path $dir 'requirements.txt'), $RuntimeBytes) }
+    if ($null -ne $DevBytes) { [System.IO.File]::WriteAllBytes((Join-Path $dir 'requirements-dev.txt'), $DevBytes) }
+    return $dir
+}
+
+function Initialize-FakeFiles {
+    param([object]$Root, [string[]]$State, [string[]]$Resolve, [string[]]$Transitive)
+
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines((Join-Path $Root.Path 'pip-state.txt'), $State, $utf8)
+    [System.IO.File]::WriteAllLines((Join-Path $Root.Path 'resolve.txt'), $Resolve, $utf8)
+    [System.IO.File]::WriteAllLines((Join-Path $Root.Path 'transitive.txt'), $Transitive, $utf8)
+}
+
+function New-Scenario {
+    param(
+        [string]$RuntimeText,
+        [string]$DevText,
+        [switch]$NoVenv,
+        [string[]]$Resolve = @('pytest=8.4.2', 'python-pptx=1.0.2', 'pyinstaller=6.11.1', 'pyperclip=1.9.0', 'playwright=1.58.0'),
+        [string[]]$Transitive = @('pytest:iniconfig==2.0.0')
+    )
+
+    $root = New-InstallRoot
+    $runtime = $null
+    if (-not [string]::IsNullOrEmpty($RuntimeText)) { $runtime = ConvertTo-TextBytes -Text $RuntimeText }
+    $dev = $null
+    if (-not [string]::IsNullOrEmpty($DevText)) { $dev = ConvertTo-TextBytes -Text $DevText }
+    $project = New-TestProject -Root $root -FolderName 'Project Demo' -RuntimeBytes $runtime -DevBytes $dev -NoVenv:$NoVenv
+    Initialize-FakeFiles -Root $root -State @('pip==24.0', 'setuptools==65.5.0') -Resolve $Resolve -Transitive $Transitive
+    return [pscustomobject]@{
+        Root = $root; Project = $project
+        Runtime = Join-Path $project 'requirements.txt'; Dev = Join-Path $project 'requirements-dev.txt'
+    }
+}
+
+function Get-FakeEnvironment {
+    param([object]$Root, [hashtable]$Extra)
+
+    $environment = @{
+        FAKE_PIP_LOG         = Join-Path $Root.Path 'pip.log'
+        FAKE_PIP_STATE       = Join-Path $Root.Path 'pip-state.txt'
+        FAKE_PIP_RESOLVE     = Join-Path $Root.Path 'resolve.txt'
+        FAKE_PIP_TRANSITIVE  = Join-Path $Root.Path 'transitive.txt'
+        FAKE_PIP_MODE        = 'ok'
+        FAKE_PIP_FREEZE_MODE = 'ok'
+    }
+    if ($null -ne $Extra) { foreach ($key in $Extra.Keys) { $environment[$key] = $Extra[$key] } }
+    return $environment
+}
+
+function Invoke-Install {
+    param(
+        [object]$Root,
+        [string[]]$Arguments,
+        [hashtable]$Extra,
+        [string]$InputText,
+        [string]$WorkingDirectory,
+        [switch]$Confirm
+    )
+
+    $all = @('-TestMode', '-TestWorkspaceRoot', $Root.Path) + @($Arguments)
+    if (-not $Confirm.IsPresent -and -not ($all -contains '-ConfirmAnswer') -and [string]::IsNullOrEmpty($InputText) -and -not ($all -contains '-ValidateOnly')) {
+        $all += '-SkipConfirmation'
+    }
+    return (Invoke-ToolProcess -ScriptName 'Install-Packages.ps1' -Arguments $all -InputText $InputText -WorkingDirectory $WorkingDirectory -Environment (Get-FakeEnvironment -Root $Root -Extra $Extra))
+}
+
+function Get-PipLogLines {
+    param([object]$Root)
+
+    $path = Join-Path $Root.Path 'pip.log'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @() }
+    return @([System.IO.File]::ReadAllLines($path))
+}
+
+function Get-InstallCallLines {
+    param([object]$Root)
+
+    return @(Get-PipLogLines -Root $Root | Where-Object { $_.StartsWith('ARGS|-m|pip|install|') })
+}
+
+function Get-TreeSnapshot {
+    param([string]$Path)
+
+    $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $lines = @(Get-ChildItem -LiteralPath $full -Recurse -Force -File | ForEach-Object {
+            $_.FullName.Substring($full.Length + 1) + '|' + $_.Length + '|' + (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+        } | Sort-Object)
+    return ($lines -join "`n")
+}
+
+function Get-StateText {
+    param([object]$Root)
+
+    return [System.IO.File]::ReadAllText((Join-Path $Root.Path 'pip-state.txt'))
+}
+
+function Set-ApprovedListForRoot {
+    param([object]$Root, [object[]]$Packages)
+
+    Write-ApprovedPackageList -Path (Join-Path $Root.Path 'ApprovedPackages\approved-packages.json') -Packages $Packages
+}
+
+function Assert-StopsWithoutInstall {
+    param([object]$Scenario, [string[]]$Arguments, [int]$ExpectedExit = 1, [hashtable]$Extra, [string]$InputText, [string]$Label)
+
+    $before = Get-TreeSnapshot -Path $Scenario.Root.Path
+    $run = Invoke-Install -Root $Scenario.Root -Arguments $Arguments -Extra $Extra -InputText $InputText
+    Assert-True ($run.ExitCode -eq $ExpectedExit) ($Label + ': expected exit code ' + $ExpectedExit + ' but got ' + $run.ExitCode + [Environment]::NewLine + $run.Output)
+    Assert-True (@(Get-InstallCallLines -Root $Scenario.Root).Count -eq 0) ($Label + ': pip install was called.')
+    Assert-True ((Get-TreeSnapshot -Path $Scenario.Root.Path) -ceq $before) ($Label + ': files changed.')
+}
+
+function Invoke-InstallSpecGroup {
+    $g = 'InstallSpec'
+    $list = @($realRead.Data.packages)
+    Invoke-Check $g 'Add-OneToDecimalString handles carries' {
+        foreach ($pair in @(@('0', '1'), @('8', '9'), @('9', '10'), @('19', '20'), @('99', '100'), @('199', '200'), @('1299', '1300'))) {
+            Assert-True ((Add-OneToDecimalString -Digits $pair[0]) -ceq $pair[1]) ($pair[0] + ' -> ' + (Add-OneToDecimalString -Digits $pair[0]))
+        }
+    }
+    $expectations = @(
+        @('pytest', $null, 'pytest>=8,<9', 'RangeFromList'),
+        @('python-pptx', $null, 'python-pptx>=1,<2', 'RangeFromList'),
+        @('pyinstaller', $null, 'pyinstaller>=6,<7', 'RangeFromList'),
+        @('pyperclip', $null, 'pyperclip>=1,<2', 'RangeFromList'),
+        @('pdfplumber', $null, 'pdfplumber==0.10.3', 'FixedFromList'),
+        @('pypdf', $null, 'pypdf==6.8.0', 'FixedFromList'),
+        @('pywin32', $null, 'pywin32==312', 'FixedFromList'),
+        @('playwright', $null, 'playwright', 'AnyVersion'),
+        @('pytest', '8.3.5', 'pytest==8.3.5', 'Pinned')
+    )
+    foreach ($case in $expectations) {
+        $caseName = $case[0]; $caseVersion = $case[1]; $caseSpec = $case[2]; $caseMode = $case[3]
+        Invoke-Check $g ("Spec for {0} (requested: {1}) is {2} [{3}]" -f $caseName, $caseVersion, $caseSpec, $caseMode) {
+            $package = Find-ApprovedPackage -Packages $list -Name $caseName
+            $result = Get-PipRequirementSpec -Name $caseName -Package $package -RequestedVersion $caseVersion
+            Assert-True ($result.Spec -ceq $caseSpec -and $result.Mode -ceq $caseMode) ('Got ' + $result.Spec + ' [' + $result.Mode + ']')
+        }
+    }
+    Invoke-Check $g 'Range generation for other wildcard shapes keeps the requirements spelling' {
+        $cases = @(@('1.2.*', 'x>=1.2,<1.3'), @('0.10.*', 'x>=0.10,<0.11'), @('9.*', 'x>=9,<10'), @('99.*.*', 'x>=99,<100'), @('9.9.*', 'x>=9.9,<9.10'), @('08.*', 'x>=8,<9'))
+        foreach ($case in $cases) {
+            $package = New-ApprovedPackage -Name 'x' -AllowedVersions @($case[0]) -Purpose '' -Status 'approved' -ApprovedDate '2026-01-02' -Notes ''
+            Assert-True ((Get-PipRequirementSpec -Name 'x' -Package $package -RequestedVersion $null).Spec -ceq $case[1]) ($case[0] + ' -> ' + (Get-PipRequirementSpec -Name 'x' -Package $package -RequestedVersion $null).Spec)
+        }
+        $pytest = Find-ApprovedPackage -Packages $list -Name 'pytest'
+        Assert-True ((Get-PipRequirementSpec -Name 'Py_Test' -Package $pytest -RequestedVersion $null).Spec -ceq 'Py_Test>=8,<9') 'The requirements spelling must be kept.'
+    }
+    Invoke-Check $g 'Several allowed expressions cannot be expressed as one range, so a pin is required' {
+        $package = New-ApprovedPackage -Name 'x' -AllowedVersions @('8.*.*', '7.*') -Purpose '' -Status 'approved' -ApprovedDate '2026-01-02' -Notes ''
+        $unpinned = Get-PipRequirementSpec -Name 'x' -Package $package -RequestedVersion $null
+        Assert-True ($unpinned.Mode -ceq 'NeedsPin' -and $unpinned.Spec -ceq '') 'NeedsPin expected.'
+        $pinned = Get-PipRequirementSpec -Name 'x' -Package $package -RequestedVersion '7.4'
+        Assert-True ($pinned.Mode -ceq 'Pinned' -and $pinned.Spec -ceq 'x==7.4') 'A pinned version must be passed through.'
+    }
+    Invoke-Check $g 'The requirements syntax rules from the plan: spaces around ==, inline comments, and normalized duplicates stop' {
+        foreach ($case in @(@('package== 1.2.3', 'Format'), @('package ==1.2.3', 'Format'), @('package == 1.2.3', 'Format'), @('package==1.2.3 # comment', 'InlineComment'))) {
+            $result = ConvertFrom-RequirementsText -Text ($case[0] + "`r`n")
+            Assert-True (@($result.Entries).Count -eq 0 -and @($result.Problems).Count -eq 1 -and $result.Problems[0].Code -ceq $case[1]) ($case[0] + ' -> ' + (@($result.Problems | ForEach-Object { $_.Code }) -join ','))
+        }
+        $duplicate = ConvertFrom-RequirementsText -Text "types-openpyxl==1.0`r`ntypes_openpyxl==1.0`r`n"
+        Assert-True (@($duplicate.Entries).Count -eq 1 -and @($duplicate.Problems).Count -eq 1 -and $duplicate.Problems[0].Code -ceq 'Duplicate') 'The normalized duplicate must stop.'
+        $comment = ConvertFrom-RequirementsText -Text "# comment line`r`n"
+        Assert-True (@($comment.Problems).Count -eq 0) 'A comment line is allowed.'
+    }
+    Invoke-Check $g 'ConvertTo-UpdatedRequirementsText changes only the target lines and keeps every line ending' {
+        $text = "# top`r`n`r`n  pytest  `n# mid`rPython_PPTX`r`npdfplumber==0.10.3"
+        $updates = @([pscustomobject]@{ LineNumber = 3; Name = 'pytest'; Version = '8.4.2' }, [pscustomobject]@{ LineNumber = 5; Name = 'Python_PPTX'; Version = '1.0.2' })
+        $result = ConvertTo-UpdatedRequirementsText -Text $text -Updates $updates
+        Assert-True ($result -ceq "# top`r`n`r`n  pytest==8.4.2  `n# mid`rPython_PPTX==1.0.2`r`npdfplumber==0.10.3") ('Result: ' + $result.Replace("`r", '<CR>').Replace("`n", '<LF>'))
+        Assert-Throws { ConvertTo-UpdatedRequirementsText -Text $text -Updates @([pscustomobject]@{ LineNumber = 3; Name = 'other'; Version = '1.0' }) } 'A name mismatch must throw.'
+        Assert-Throws { ConvertTo-UpdatedRequirementsText -Text $text -Updates @([pscustomobject]@{ LineNumber = 99; Name = 'pytest'; Version = '1.0' }) } 'A line number out of range must throw.'
+        Assert-Throws { ConvertTo-UpdatedRequirementsText -Text $text -Updates @([pscustomobject]@{ LineNumber = 1; Name = '#'; Version = '1.0' }) } 'A comment line must never be rewritten.'
+    }
+    Invoke-Check $g 'Update-RequirementsPins keeps the BOM state and line endings, and leaves the file untouched on error' {
+        $root = New-DataRoot
+        try {
+            foreach ($withBom in @($true, $false)) {
+                $path = Join-Path $root.Path ('req-' + $withBom + '.txt')
+                $original = ConvertTo-TextBytes -Text "# c`r`npytest`r`nother==1.0" -Bom:$withBom
+                [System.IO.File]::WriteAllBytes($path, $original)
+                Update-RequirementsPins -Path $path -Updates @([pscustomobject]@{ LineNumber = 2; Name = 'pytest'; Version = '8.4.2' })
+                $expected = ConvertTo-TextBytes -Text "# c`r`npytest==8.4.2`r`nother==1.0" -Bom:$withBom
+                Assert-True ([System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path)) -ceq [System.Convert]::ToBase64String($expected)) ('Bytes differ (BOM=' + $withBom + ').')
+                $before = Get-Sha256 -Path $path
+                Assert-Throws { Update-RequirementsPins -Path $path -Updates @([pscustomobject]@{ LineNumber = 2; Name = 'nope'; Version = '1.0' }) } 'A bad update must throw.'
+                Assert-True ((Get-Sha256 -Path $path) -ceq $before) 'The file changed after a failed update.'
+            }
+            Assert-True (@(Get-ChildItem -LiteralPath $root.Path -Force | Where-Object { $_.Name -like '*.tmp' }).Count -eq 0) 'A temporary file remains.'
+        } finally { Remove-DataRoot -Entry $root }
+    }
+    Invoke-Check $g 'pip freeze parsing and the before/after difference' {
+        $before = ConvertFrom-PipFreezeText -Lines @('pip==24.0', 'Setup_Tools==65.5.0', '-e git+https://x#egg=y', 'WARNING: something', '')
+        Assert-True ($before.Count -eq 2 -and $before['setup-tools'] -ceq '65.5.0') 'Parsing failed.'
+        $after = ConvertFrom-PipFreezeText -Lines @('pip==24.1', 'setup-tools==65.5.0', 'pytest==8.4.2', 'iniconfig==2.0.0')
+        $changes = @(Compare-FreezeSnapshots -Before $before -After $after)
+        Assert-True ($changes.Count -eq 3) ('Expected 3 differences but got ' + $changes.Count)
+        Assert-True (@($changes | Where-Object { $_.Kind -ceq 'Changed' -and $_.Name -ceq 'pip' }).Count -eq 1) 'pip change.'
+        Assert-True (@($changes | Where-Object { $_.Kind -ceq 'Added' }).Count -eq 2) 'Added packages.'
+        Assert-True (@(Compare-FreezeSnapshots -Before $before -After $before).Count -eq 0) 'No difference expected.'
+    }
+}
+
+function Invoke-InstallProjectGroup {
+    $g = 'InstallProject'
+    $demoText = "pytest`r`n"
+    Invoke-Check $g 'Project selection rules: neither or both of -ProjectPath/-SelectProject, a missing or bad -Target, and test-only options without -TestMode all stop' {
+        $s = New-Scenario -RuntimeText $demoText
+        try {
+            $cases = @(
+                @('-Target', 'Runtime'),
+                @('-ProjectPath', $s.Project, '-SelectProject', '-Target', 'Runtime'),
+                @('-ProjectPath', $s.Project),
+                @('-ProjectPath', $s.Project, '-Target', 'Everything'),
+                @('-ProjectPath', $s.Project, '-Target', 'runtime'),
+                @('-SelectProject')
+            )
+            foreach ($case in $cases) {
+                Assert-StopsWithoutInstall -Scenario $s -Arguments $case -Label ($case -join ' ')
+            }
+            $before = Get-TreeSnapshot -Path $s.Root.Path
+            foreach ($extra in @(@('-SkipConfirmation'), @('-ConfirmAnswer', 'N'), @('-TestWorkspaceRoot', $s.Root.Path))) {
+                $run = Invoke-ToolProcess -ScriptName 'Install-Packages.ps1' -Arguments (@('-ProjectPath', $s.Project, '-Target', 'Runtime') + $extra)
+                Assert-True ($run.ExitCode -eq 1) ('Test-only options without -TestMode must fail: ' + ($extra -join ' '))
+            }
+            $normal = Invoke-ToolProcess -ScriptName 'Install-Packages.ps1' -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime', '-ValidateOnly')
+            Assert-True ($normal.ExitCode -eq 1) 'A project outside the real Projects folder must be rejected in normal mode.'
+            $noRoot = Invoke-ToolProcess -ScriptName 'Install-Packages.ps1' -Arguments @('-TestMode', '-ProjectPath', $s.Project, '-Target', 'Runtime')
+            Assert-True ($noRoot.ExitCode -eq 1) '-TestMode without -TestWorkspaceRoot must fail.'
+            foreach ($badRoot in @($realPaths.WorkspaceRoot, $tempBase, (Join-Path $s.Root.Path 'Projects'))) {
+                $run = Invoke-ToolProcess -ScriptName 'Install-Packages.ps1' -Arguments @('-TestMode', '-TestWorkspaceRoot', $badRoot, '-ProjectPath', $s.Project, '-Target', 'Runtime', '-ValidateOnly')
+                Assert-True ($run.ExitCode -eq 1) ('An unmarked test root must be rejected: ' + $badRoot)
+            }
+            Assert-True ((Get-TreeSnapshot -Path $s.Root.Path) -ceq $before) 'Files changed.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'No project is guessed from the current directory, even from inside a project folder' {
+        $s = New-Scenario -RuntimeText $demoText
+        try {
+            $run = Invoke-Install -Root $s.Root -Arguments @('-Target', 'Runtime', '-ValidateOnly') -WorkingDirectory $s.Project
+            Assert-True ($run.ExitCode -eq 1) 'Running without a project from inside a project must fail.'
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $s.Root.Path 'pip.log'))) 'pip was called.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g '-ProjectPath rejections: not under Projects, template, non-Project names, missing, file, link, nested, outside' {
+        $s = New-Scenario -RuntimeText $demoText
+        try {
+            $projects = Join-Path $s.Root.Path 'Projects'
+            [void](New-Item -ItemType Directory -Path (Join-Path $projects '_Template_Python'))
+            [void](New-Item -ItemType Directory -Path (Join-Path $projects 'Other'))
+            [void](New-Item -ItemType Directory -Path (Join-Path $s.Project 'sub'))
+            [System.IO.File]::WriteAllText((Join-Path $projects 'Project File'), 'x')
+            $linkTarget = Join-Path $s.Root.Path 'linktarget'
+            [void](New-Item -ItemType Directory -Path $linkTarget)
+            $link = Join-Path $projects 'Project Link'
+            & cmd.exe /c ('mklink /J "' + $link + '" "' + $linkTarget + '"') | Out-Null
+            $outside = New-DataRoot
+            [void](New-Item -ItemType Directory -Path (Join-Path $outside.Path 'Project Z'))
+            $candidates = @($s.Root.Path, $projects, (Join-Path $projects '_Template_Python'), (Join-Path $projects 'Other'), (Join-Path $projects 'Project Nope'),
+                (Join-Path $projects 'Project File'), $link, (Join-Path $s.Project 'sub'), (Join-Path $outside.Path 'Project Z'), ($s.Project + '\..\Other'))
+            foreach ($candidate in $candidates) {
+                $before = Get-TreeSnapshot -Path $s.Root.Path
+                $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $candidate, '-Target', 'Runtime', '-ValidateOnly')
+                Assert-True ($run.ExitCode -eq 1) ('Expected a rejection for: ' + $candidate)
+                Assert-True ((Get-TreeSnapshot -Path $s.Root.Path) -ceq $before) 'Files changed.'
+            }
+            $ok = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime', '-ValidateOnly')
+            Assert-True ($ok.ExitCode -eq 0) 'The valid project must pass.'
+            $upper = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project.ToUpperInvariant(), '-Target', 'Runtime', '-ValidateOnly')
+            Assert-True ($upper.ExitCode -eq 0) 'A different letter case of the same folder must pass (Windows).'
+            Assert-True (@(Get-PipLogLines -Root $s.Root).Count -eq 0) 'pip was called.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'A relative -ProjectPath works from the workspace root; Japanese and spaces in the folder name work' {
+        $s = New-Scenario -RuntimeText $demoText
+        try {
+            $relative = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', '.\Projects\Project Demo', '-Target', 'Runtime', '-ValidateOnly') -WorkingDirectory $s.Root.Path
+            Assert-True ($relative.ExitCode -eq 0) ('Relative path exit code ' + $relative.ExitCode + ': ' + $relative.Output)
+            $japaneseName = 'Project ' + [char]0x90E8 + [char]0x54C1 + ' ' + [char]0x30C6 + [char]0x30B9 + [char]0x30C8
+            $japanese = New-TestProject -Root $s.Root -FolderName $japaneseName -RuntimeBytes (ConvertTo-TextBytes -Text "pytest`r`n")
+            Copy-Item -LiteralPath (Get-FakePython) -Destination (Join-Path (New-Item -ItemType Directory -Path (Join-Path $japanese '.venv\Scripts') -Force).FullName 'python.exe')
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $japanese, '-Target', 'Runtime', '-ValidateOnly')
+            Assert-True ($run.ExitCode -eq 0) ('Japanese path exit code ' + $run.ExitCode)
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g '-SelectProject lists only visible Project folders and selects by number' {
+        $s = New-Scenario -RuntimeText $demoText
+        try {
+            $projects = Join-Path $s.Root.Path 'Projects'
+            Remove-Item -LiteralPath $s.Project -Recurse -Force
+            [void](New-TestProject -Root $s.Root -FolderName 'Project B' -RuntimeBytes (ConvertTo-TextBytes -Text "pytest`r`n"))
+            [void](New-TestProject -Root $s.Root -FolderName 'Project A' -RuntimeBytes (ConvertTo-TextBytes -Text "pytest`r`n"))
+            foreach ($other in @('_Template_Python', '_Template_Combined', 'Other', 'Project Hidden')) { [void](New-Item -ItemType Directory -Path (Join-Path $projects $other)) }
+            [System.IO.File]::SetAttributes((Join-Path $projects 'Project Hidden'), ([System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::Hidden))
+            [System.IO.File]::WriteAllText((Join-Path $projects 'Project File'), 'x')
+            $linkTarget = Join-Path $s.Root.Path 'linktarget'
+            [void](New-Item -ItemType Directory -Path $linkTarget)
+            & cmd.exe /c ('mklink /J "' + (Join-Path $projects 'Project Link') + '" "' + $linkTarget + '"') | Out-Null
+            $nl = "`r`n"
+            $run = Invoke-Install -Root $s.Root -Arguments @('-SelectProject', '-Target', 'Runtime', '-ValidateOnly') -InputText ('2' + $nl)
+            Assert-True ($run.ExitCode -eq 0) ('Exit code ' + $run.ExitCode + [Environment]::NewLine + $run.Output)
+            foreach ($visible in @('Project A', 'Project B')) { Assert-True ($run.Output.Contains($visible)) ('The list must show: ' + $visible) }
+            foreach ($hidden in @('Project Hidden', '_Template', 'Other', 'Project File', 'Project Link')) { Assert-True (-not $run.Output.Contains($hidden)) ('The list must not show: ' + $hidden) }
+            Assert-True ($run.Output.Contains('Projects\Project B') -and -not $run.Output.Contains('Projects\Project A')) 'Entry 2 must select Project B.'
+            $first = Invoke-Install -Root $s.Root -Arguments @('-SelectProject', '-Target', 'Runtime', '-ValidateOnly') -InputText ('1' + $nl)
+            Assert-True ($first.ExitCode -eq 0 -and $first.Output.Contains('Projects\Project A')) 'Entry 1 must select Project A.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g '-SelectProject rejects non-numbers, 0, out-of-range, negative, and Enter, then accepts a valid number; end of input stops' {
+        $s = New-Scenario -RuntimeText $demoText
+        try {
+            $nl = "`r`n"
+            $run = Invoke-Install -Root $s.Root -Arguments @('-SelectProject', '-Target', 'Runtime', '-ValidateOnly') -InputText ('x' + $nl + '0' + $nl + '99' + $nl + $nl + '-1' + $nl + '1.5' + $nl + '1' + $nl)
+            Assert-True ($run.ExitCode -eq 0 -and $run.Output.Contains('Projects\Project Demo')) ('Exit code ' + $run.ExitCode)
+            $eof = Invoke-Install -Root $s.Root -Arguments @('-SelectProject', '-Target', 'Runtime', '-ValidateOnly') -InputText ('x' + $nl)
+            Assert-True ($eof.ExitCode -eq 1) 'End of input must stop with exit code 1 (no endless loop).'
+            $closed = Invoke-Install -Root $s.Root -Arguments @('-SelectProject', '-Target', 'Runtime', '-ValidateOnly')
+            Assert-True ($closed.ExitCode -eq 1) 'A closed standard input must stop with exit code 1.'
+            Assert-True (@(Get-PipLogLines -Root $s.Root).Count -eq 0) 'pip was called.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g '-SelectProject: no selectable project, or a selected project without .venv or requirements, stops without changes' {
+        $s = New-Scenario -RuntimeText $demoText -NoVenv
+        try {
+            $nl = "`r`n"
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-SelectProject', '-Target', 'Runtime') -InputText ('1' + $nl) -Label 'no .venv'
+            Remove-Item -LiteralPath $s.Project -Recurse -Force
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-SelectProject', '-Target', 'Runtime') -InputText ('1' + $nl) -Label 'no projects'
+            [void](New-TestProject -Root $s.Root -FolderName 'Project Bare')
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-SelectProject', '-Target', 'Runtime') -InputText ('1' + $nl) -Label 'no requirements'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'Function level: Assert-ProjectFolder and Get-SelectableProjects apply the folder rules' {
+        $s = New-Scenario -RuntimeText $demoText
+        try {
+            $projects = Join-Path $s.Root.Path 'Projects'
+            $found = Assert-ProjectFolder -FullPath $s.Project -ProjectsRoot $projects
+            Assert-True ($found.Name -ceq 'Project Demo') 'The valid project must be accepted.'
+            Assert-Throws { Assert-ProjectFolder -FullPath (Join-Path $projects 'Project Nope') -ProjectsRoot $projects } 'A missing folder must be rejected.'
+            Assert-Throws { Assert-ProjectFolder -FullPath $projects -ProjectsRoot $projects } 'The Projects folder itself must be rejected.'
+            $names = @(Get-SelectableProjects -ProjectsRoot $projects | ForEach-Object { $_.Name })
+            Assert-True (($names -join '|') -ceq 'Project Demo') ('Selectable: ' + ($names -join ','))
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'Function level: a project folder replaced after the list was shown is detected' {
+        $s = New-Scenario -RuntimeText $demoText
+        try {
+            $projects = Join-Path $s.Root.Path 'Projects'
+            $script:SwapTarget = $s.Project
+            function Read-UserInput {
+                param([string]$Prompt)
+                [System.IO.Directory]::Delete($script:SwapTarget, $true)
+                [void](New-Item -ItemType Directory -Path $script:SwapTarget)
+                [System.IO.Directory]::SetCreationTimeUtc($script:SwapTarget, (Get-Date).AddDays(-400).ToUniversalTime())
+                return '1'
+            }
+            Assert-Throws { Select-ProjectFromList -ProjectsRoot $projects } 'A replaced folder must be detected.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+}
+
+function Invoke-InstallRunGroup {
+    $g = 'InstallRun'
+    $runtimeText = "# runtime packages`r`n`r`npytest`r`npdfplumber==0.10.3`r`nPython_PPTX`r`n"
+    Invoke-Check $g 'Runtime: one pip call with only direct dependencies; specs are range, pinned, and range; recorded arguments are shown' {
+        $s = New-Scenario -RuntimeText $runtimeText -DevText "pyinstaller`r`n"
+        try {
+            $devBefore = Get-Sha256 -Path $s.Dev
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime')
+            Assert-True ($run.ExitCode -eq 0) ('Exit code ' + $run.ExitCode + [Environment]::NewLine + $run.Output)
+            $log = @(Get-PipLogLines -Root $s.Root)
+            Write-Host ('    recorded fake python calls: ' + ($log -join '  ||  '))
+            Assert-True ($log.Count -eq 3) ('Expected freeze, install, freeze but got ' + $log.Count)
+            Assert-True ($log[0] -ceq 'ARGS|-m|pip|freeze' -and $log[2] -ceq 'ARGS|-m|pip|freeze') 'The freeze calls are missing.'
+            Assert-True ($log[1] -ceq 'ARGS|-m|pip|install|pytest>=8,<9|pdfplumber==0.10.3|Python_PPTX>=1,<2') ('Install call: ' + $log[1])
+            $installArgs = @($log[1].Split('|') | Select-Object -Skip 1)
+            Assert-True (@($installArgs | Where-Object { $_.StartsWith('-') }).Count -eq 1) 'Only -m may start with a dash (no pip options).'
+            foreach ($forbidden in @('--trusted-host', '--upgrade', '-U', '--index-url', '--cert', '--proxy', '--no-verify', '-r', '-e')) { Assert-True ($installArgs -cnotcontains $forbidden) ('Forbidden argument: ' + $forbidden) }
+            Assert-True ((Get-Sha256 -Path $s.Dev) -ceq $devBefore) 'The development requirements file must not be touched for Target Runtime.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'After success: only unversioned lines are pinned to the installed version; comments, blank lines, and order stay; transitive packages are not added' {
+        $s = New-Scenario -RuntimeText $runtimeText
+        try {
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime')
+            Assert-True ($run.ExitCode -eq 0) ('Exit code ' + $run.ExitCode)
+            $after = [System.IO.File]::ReadAllText($s.Runtime)
+            Assert-True ($after -ceq "# runtime packages`r`n`r`npytest==8.4.2`r`npdfplumber==0.10.3`r`nPython_PPTX==1.0.2`r`n") ('Requirements: ' + $after.Replace("`r`n", '<CRLF>'))
+            Assert-True ($after -notmatch 'iniconfig') 'A transitive dependency was added.'
+            Assert-True ((Get-StateText -Root $s.Root).Contains('iniconfig==2.0.0')) 'The fake transitive dependency was not installed.'
+            Assert-True ($run.Output.Contains('iniconfig==2.0.0')) 'The installed-package list (pip freeze) is not shown.'
+            $bytes = [System.IO.File]::ReadAllBytes($s.Runtime)
+            Assert-True (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF)) 'A BOM was added.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    $variants = @(
+        @{ Label = 'BOM, CRLF, no trailing newline'; Bom = $true; Before = "# c`r`npytest`r`n`r`npdfplumber==0.10.3"; After = "# c`r`npytest==8.4.2`r`n`r`npdfplumber==0.10.3" },
+        @{ Label = 'LF only, indentation and trailing spaces, trailing newline'; Bom = $false; Before = "  pytest  `n# note`n`n"; After = "  pytest==8.4.2  `n# note`n`n" },
+        @{ Label = 'mixed CR, LF, and CRLF'; Bom = $false; Before = "pytest`r`n# a`npdfplumber==0.10.3`rPython_PPTX`n"; After = "pytest==8.4.2`r`n# a`npdfplumber==0.10.3`rPython_PPTX==1.0.2`n" },
+        @{ Label = 'Japanese comment (UTF-8)'; Bom = $false; Before = ("# " + [char]0x65E5 + [char]0x672C + [char]0x8A9E + "`r`npytest`r`n"); After = ("# " + [char]0x65E5 + [char]0x672C + [char]0x8A9E + "`r`npytest==8.4.2`r`n") }
+    )
+    foreach ($variant in $variants) {
+        $variantLabel = $variant.Label; $variantBom = $variant.Bom; $variantBefore = $variant.Before; $variantAfter = $variant.After
+        Invoke-Check $g ('Rewrite keeps the file format: ' + $variantLabel) {
+            $s = New-Scenario -RuntimeText 'x'
+            try {
+                [System.IO.File]::WriteAllBytes($s.Runtime, (ConvertTo-TextBytes -Text $variantBefore -Bom:$variantBom))
+                $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime')
+                Assert-True ($run.ExitCode -eq 0) ('Exit code ' + $run.ExitCode + [Environment]::NewLine + $run.Output)
+                $expected = ConvertTo-TextBytes -Text $variantAfter -Bom:$variantBom
+                Assert-True ([System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($s.Runtime)) -ceq [System.Convert]::ToBase64String($expected)) 'The rewritten bytes differ from the expected bytes.'
+            } finally { Remove-DataRoot -Entry $s.Root }
+        }
+    }
+    Invoke-Check $g 'Target Development uses only requirements-dev.txt; Target All uses both files in one pip call and rewrites each file separately' {
+        $s = New-Scenario -RuntimeText "pytest`r`npdfplumber`r`n" -DevText "# dev tools`r`npyinstaller`r`n"
+        try {
+            $dev = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Development')
+            Assert-True ($dev.ExitCode -eq 0) 'Development failed.'
+            $call = @(Get-InstallCallLines -Root $s.Root)
+            Assert-True ($call.Count -eq 1 -and $call[0] -ceq 'ARGS|-m|pip|install|pyinstaller>=6,<7') ('Development call: ' + ($call -join ';'))
+            Assert-True ([System.IO.File]::ReadAllText($s.Dev) -ceq "# dev tools`r`npyinstaller==6.11.1`r`n") 'The dev file was not pinned.'
+            Assert-True ([System.IO.File]::ReadAllText($s.Runtime) -ceq "pytest`r`npdfplumber`r`n") 'The runtime file must not change.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+        $s = New-Scenario -RuntimeText "pytest`r`npdfplumber`r`n" -DevText "# dev tools`r`npyinstaller`r`n"
+        try {
+            $all = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'All')
+            Assert-True ($all.ExitCode -eq 0) ('All failed: ' + $all.Output)
+            $call = @(Get-InstallCallLines -Root $s.Root)
+            Assert-True ($call.Count -eq 1 -and $call[0] -ceq 'ARGS|-m|pip|install|pytest>=8,<9|pdfplumber==0.10.3|pyinstaller>=6,<7') ('All call: ' + ($call -join ';'))
+            Write-Host ('    recorded install call (All): ' + $call[0])
+            Assert-True ([System.IO.File]::ReadAllText($s.Runtime) -ceq "pytest==8.4.2`r`npdfplumber==0.10.3`r`n") 'The runtime file was not pinned correctly.'
+            Assert-True ([System.IO.File]::ReadAllText($s.Dev) -ceq "# dev tools`r`npyinstaller==6.11.1`r`n") 'The dev file was not pinned correctly.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'Fixed and wildcard specs for the remaining approved packages (pypdf, pywin32, pyperclip) and an already pinned file' {
+        $s = New-Scenario -RuntimeText "pypdf`r`npywin32`r`npyperclip`r`n"
+        try {
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime')
+            Assert-True ($run.ExitCode -eq 0) 'Failed.'
+            Assert-True (@(Get-InstallCallLines -Root $s.Root)[0] -ceq 'ARGS|-m|pip|install|pypdf==6.8.0|pywin32==312|pyperclip>=1,<2') ('Call: ' + @(Get-InstallCallLines -Root $s.Root)[0])
+            Assert-True ([System.IO.File]::ReadAllText($s.Runtime) -ceq "pypdf==6.8.0`r`npywin32==312`r`npyperclip==1.9.0`r`n") 'Pins.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+        $s = New-Scenario -RuntimeText "pytest==8.3.5`r`npdfplumber==0.10.3`r`n"
+        try {
+            $before = Get-Sha256 -Path $s.Runtime
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime')
+            Assert-True ($run.ExitCode -eq 0) 'Pinned run failed.'
+            Assert-True (@(Get-InstallCallLines -Root $s.Root)[0] -ceq 'ARGS|-m|pip|install|pytest==8.3.5|pdfplumber==0.10.3') 'Pinned versions must be kept (not upgraded within the range).'
+            Assert-True ((Get-Sha256 -Path $s.Runtime) -ceq $before) 'A fully pinned file must not be rewritten.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'An empty requirements file installs nothing (no pip call, exit code 0)' {
+        $s = New-Scenario -RuntimeText "# nothing yet`r`n"
+        try {
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime')
+            Assert-True ($run.ExitCode -eq 0) 'Exit code.'
+            Assert-True (@(Get-PipLogLines -Root $s.Root).Count -eq 0) 'pip was called.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'pip failure (exit 1): treated as failure, requirements unchanged, error output shown, no uninstall or rollback' {
+        $s = New-Scenario -RuntimeText $runtimeText
+        try {
+            $before = Get-TreeSnapshot -Path $s.Project
+            $stateBefore = Get-StateText -Root $s.Root
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -Extra @{ FAKE_PIP_MODE = 'fail' }
+            Assert-True ($run.ExitCode -eq 1) ('Exit code ' + $run.ExitCode)
+            Assert-True ($run.Output.Contains('ERROR: fake pip failure')) 'The pip error output was hidden.'
+            Assert-True ((Get-TreeSnapshot -Path $s.Project) -ceq $before) 'The project changed.'
+            Assert-True ((Get-StateText -Root $s.Root) -ceq $stateBefore) 'The installed packages changed.'
+            $log = @(Get-PipLogLines -Root $s.Root)
+            Assert-True (@($log | Where-Object { $_ -match 'uninstall' }).Count -eq 0) 'An uninstall was attempted.'
+            Assert-True (@(Get-InstallCallLines -Root $s.Root).Count -eq 1) 'Exactly one install call is expected.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'Partial pip failure: requirements unchanged, the first package stays installed (no rollback), and the difference is reported' {
+        $s = New-Scenario -RuntimeText $runtimeText
+        try {
+            $before = Get-TreeSnapshot -Path $s.Project
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -Extra @{ FAKE_PIP_MODE = 'fail-partial' }
+            Assert-True ($run.ExitCode -eq 1) ('Exit code ' + $run.ExitCode)
+            Assert-True ((Get-TreeSnapshot -Path $s.Project) -ceq $before) 'The requirements changed.'
+            $state = Get-StateText -Root $s.Root
+            Assert-True ($state.Contains('pytest==8.4.2')) 'The partially installed package must remain.'
+            Assert-True ($run.Output -match 'pytest: .* -> 8\.4\.2') 'The difference report must list the added package with its version.'
+            $log = @(Get-PipLogLines -Root $s.Root)
+            Assert-True (@($log | Where-Object { $_ -match 'uninstall' }).Count -eq 0) 'An uninstall was attempted.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'pip succeeded but the result cannot be confirmed: nothing is rewritten (missing package, out-of-range version, unsupported version format, freeze failures)' {
+        $cases = @(
+            @{ Extra = @{ FAKE_PIP_MODE = 'skip-record' }; Resolve = $null; Label = 'package missing after install' },
+            @{ Extra = @{ FAKE_PIP_FREEZE_MODE = 'fail-after-install' }; Resolve = $null; Label = 'freeze fails after install' },
+            @{ Extra = @{}; Resolve = @('pytest=9.0.0', 'python-pptx=1.0.2'); Label = 'installed version outside the allowed range' },
+            @{ Extra = @{}; Resolve = @('pytest=8.4.2.post1', 'python-pptx=1.0.2'); Label = 'installed version with an unsupported format' }
+        )
+        foreach ($case in $cases) {
+            $s = New-Scenario -RuntimeText $runtimeText
+            try {
+                if ($null -ne $case.Resolve) { Initialize-FakeFiles -Root $s.Root -State @('pip==24.0') -Resolve $case.Resolve -Transitive @() }
+                $before = Get-Sha256 -Path $s.Runtime
+                $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -Extra $case.Extra
+                Assert-True ($run.ExitCode -eq 1) ($case.Label + ': exit code ' + $run.ExitCode)
+                Assert-True ((Get-Sha256 -Path $s.Runtime) -ceq $before) ($case.Label + ': the requirements changed.')
+            } finally { Remove-DataRoot -Entry $s.Root }
+        }
+    }
+    Invoke-Check $g 'A freeze failure before installing stops before any install call' {
+        $s = New-Scenario -RuntimeText $runtimeText
+        try {
+            $before = Get-Sha256 -Path $s.Runtime
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -Extra @{ FAKE_PIP_FREEZE_MODE = 'fail' }
+            Assert-True ($run.ExitCode -eq 1) 'Exit code.'
+            Assert-True (@(Get-InstallCallLines -Root $s.Root).Count -eq 0) 'pip install was called.'
+            Assert-True ((Get-Sha256 -Path $s.Runtime) -ceq $before) 'The requirements changed.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'allowedVersions [] (playwright): warning and explicit confirmation; N, Enter, or declining the final question stops; Y proceeds with no version given to pip' {
+        $nl = "`r`n"
+        $s = New-Scenario -RuntimeText "playwright`r`n"
+        try {
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime', '-ConfirmAnswer', 'N') -ExpectedExit 2 -Label 'ConfirmAnswer N'
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -ExpectedExit 2 -InputText $nl -Label 'Enter only'
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -ExpectedExit 2 -InputText ('N' + $nl) -Label 'N'
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -ExpectedExit 2 -InputText ('Y' + $nl + 'N' + $nl) -Label 'Y then N'
+            Assert-True (@(Get-PipLogLines -Root $s.Root).Count -eq 0) 'pip was called although the user did not agree.'
+            $run = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -InputText ('Y' + $nl + 'Y' + $nl)
+            Assert-True ($run.ExitCode -eq 0) ('Exit code ' + $run.ExitCode + [Environment]::NewLine + $run.Output)
+            Assert-True (@(Get-InstallCallLines -Root $s.Root)[0] -ceq 'ARGS|-m|pip|install|playwright') ('Install call: ' + @(Get-InstallCallLines -Root $s.Root)[0])
+            Assert-True ([System.IO.File]::ReadAllText($s.Runtime) -ceq "playwright==1.58.0`r`n") 'The installed version was not pinned.'
+        } finally { Remove-DataRoot -Entry $s.Root }
+    }
+}
+
+function Invoke-InstallStopGroup {
+    $g = 'InstallStops'
+    $okRuntime = "pytest`r`n"
+    function New-Custom { param([string]$Status, [string[]]$Versions) $date = ''; if ($Status -ceq 'approved') { $date = '2026-01-02' }; return @((New-ApprovedPackage -Name 'pytest' -AllowedVersions $Versions -Purpose '' -Status $Status -ApprovedDate $date -Notes '')) }
+    $cases = @(
+        @{ Label = 'approved list file is missing'; Runtime = $okRuntime; Setup = { param($s) Remove-Item -LiteralPath (Join-Path $s.Root.Path 'ApprovedPackages\approved-packages.json') -Force } },
+        @{ Label = 'approved list is not valid JSON'; Runtime = $okRuntime; Setup = { param($s) [System.IO.File]::WriteAllText((Join-Path $s.Root.Path 'ApprovedPackages\approved-packages.json'), '{ broken', (New-Object System.Text.UTF8Encoding($false))) } },
+        @{ Label = 'approved list has a bad schema'; Runtime = $okRuntime; Setup = { param($s) [System.IO.File]::WriteAllText((Join-Path $s.Root.Path 'ApprovedPackages\approved-packages.json'), '{ "schemaVersion": 2, "packages": [] }', (New-Object System.Text.UTF8Encoding($false))) } },
+        @{ Label = 'unregistered package'; Runtime = "notregistered`r`n"; Setup = { param($s) } },
+        @{ Label = 'status pending'; Runtime = $okRuntime; Setup = { param($s) Set-ApprovedListForRoot -Root $s.Root -Packages (New-Custom -Status 'pending' -Versions @('8.*.*')) } },
+        @{ Label = 'status deprecated'; Runtime = $okRuntime; Setup = { param($s) Set-ApprovedListForRoot -Root $s.Root -Packages (New-Custom -Status 'deprecated' -Versions @('8.*.*')) } },
+        @{ Label = 'status disabled'; Runtime = $okRuntime; Setup = { param($s) Set-ApprovedListForRoot -Root $s.Root -Packages (New-Custom -Status 'disabled' -Versions @('8.*.*')) } },
+        @{ Label = 'pinned version outside the allowed range'; Runtime = "pytest==9.0.0`r`n"; Setup = { param($s) } },
+        @{ Label = 'pinned version differs from a fixed allowed version'; Runtime = "pdfplumber==0.10.4`r`n"; Setup = { param($s) } },
+        @{ Label = 'unsupported syntax (>=)'; Runtime = "pytest>=8`r`n"; Setup = { param($s) } },
+        @{ Label = 'unsupported version text (rc)'; Runtime = "pytest==8.3.5rc1`r`n"; Setup = { param($s) } },
+        @{ Label = 'several problem lines at once'; Runtime = "pytest == 1`r`npkg==1.0 # c`r`ntypes-x==1`r`ntypes_x==1`r`n-e .`r`n"; Setup = { param($s) } },
+        @{ Label = 'several allowed expressions and no pin'; Runtime = $okRuntime; Setup = { param($s) Set-ApprovedListForRoot -Root $s.Root -Packages (New-Custom -Status 'approved' -Versions @('8.*.*', '7.*')) } },
+        @{ Label = 'one blocked package stops the valid ones too'; Runtime = "pytest==8.3.5`r`nnotregistered`r`n"; Setup = { param($s) } },
+        @{ Label = 'requirements is not valid UTF-8'; Runtime = $null; Setup = { param($s) [System.IO.File]::WriteAllBytes($s.Runtime, [byte[]](0x70, 0xFF, 0xFE, 0x0D, 0x0A)) } }
+    )
+    foreach ($case in $cases) {
+        $caseLabel = $case.Label; $caseRuntime = $case.Runtime; $caseSetup = $case.Setup
+        Invoke-Check $g ('Stops without installing: ' + $caseLabel) {
+            if ($null -eq $caseRuntime) { $s = New-Scenario -RuntimeText 'pytest' } else { $s = New-Scenario -RuntimeText $caseRuntime }
+            try {
+                & $caseSetup $s
+                Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -Label $caseLabel
+            } finally { Remove-DataRoot -Entry $s.Root }
+        }
+    }
+    Invoke-Check $g 'Stops without installing: no .venv; missing requirements for the target; Target All with one file missing; the same package in both files' {
+        $s = New-Scenario -RuntimeText $okRuntime -NoVenv
+        try { Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -Label 'no venv' } finally { Remove-DataRoot -Entry $s.Root }
+        $s = New-Scenario -RuntimeText $null -DevText "pyinstaller`r`n"
+        try {
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -Label 'runtime file missing'
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'All') -Label 'All with runtime missing'
+        } finally { Remove-DataRoot -Entry $s.Root }
+        $s = New-Scenario -RuntimeText $okRuntime -DevText $null
+        try { Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'All') -Label 'All with dev missing' } finally { Remove-DataRoot -Entry $s.Root }
+        $s = New-Scenario -RuntimeText $okRuntime -DevText "Pytest`r`n"
+        try { Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'All') -Label 'same package in both files' } finally { Remove-DataRoot -Entry $s.Root }
+    }
+    Invoke-Check $g 'Declining the final question (N, Enter, or -ConfirmAnswer N) stops with exit code 2 and changes nothing' {
+        $nl = "`r`n"
+        $s = New-Scenario -RuntimeText $okRuntime
+        try {
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime', '-ConfirmAnswer', 'N') -ExpectedExit 2 -Label 'ConfirmAnswer N'
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -ExpectedExit 2 -InputText $nl -Label 'Enter only'
+            Assert-StopsWithoutInstall -Scenario $s -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -ExpectedExit 2 -InputText ('N' + $nl) -Label 'N'
+            Assert-True (@(Get-PipLogLines -Root $s.Root).Count -eq 0) 'pip was called.'
+            $yes = Invoke-Install -Root $s.Root -Arguments @('-ProjectPath', $s.Project, '-Target', 'Runtime') -InputText ('Y' + $nl)
+            Assert-True ($yes.ExitCode -eq 0) 'Answering Y must install.'
+        } finally { Remove-DataRoot -Entry $s.Root }
     }
 }
 
@@ -1128,6 +1963,10 @@ try {
     Invoke-MarkdownGroup
     Invoke-ManageGroup
     Invoke-ToolsGroup
+    Invoke-InstallSpecGroup
+    Invoke-InstallProjectGroup
+    Invoke-InstallRunGroup
+    Invoke-InstallStopGroup
     Invoke-ValidateOnlyGroup
     Invoke-Check 'Safety' 'The real approved-packages files are unchanged by this test' {
         Assert-True ((Get-Sha256 -Path $realPaths.JsonPath) -ceq $realBefore.Json) 'approved-packages.json changed.'

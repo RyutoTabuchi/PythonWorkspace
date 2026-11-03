@@ -1,7 +1,5 @@
 # {{PROJECT_DISPLAY_NAME}}
 
-> 【テンプレート運用中の注意】ワークスペース共通の `Install-Packages.ps1` が未作成の間は、このテンプレートを正式な新規プロジェクト作成に使用しないでください。（導入ツールの完成後に、この注意書きを削除します。）
-
 ## 概要
 
 このプロジェクトの概要を記載します。
@@ -71,7 +69,7 @@ package==1.2.3
 実行用パッケージ（`requirements.txt`）：
 
 ```powershell
-.\.tools\Install-Packages.ps1 `
+.\.tools\ApprovedPackages\Install-Packages.ps1 `
     -ProjectPath ".\Projects\Project {{PROJECT_DISPLAY_NAME}}" `
     -Target Runtime
 ```
@@ -79,7 +77,7 @@ package==1.2.3
 開発用パッケージ（`requirements-dev.txt`）：
 
 ```powershell
-.\.tools\Install-Packages.ps1 `
+.\.tools\ApprovedPackages\Install-Packages.ps1 `
     -ProjectPath ".\Projects\Project {{PROJECT_DISPLAY_NAME}}" `
     -Target Development
 ```
@@ -87,7 +85,7 @@ package==1.2.3
 すべてのパッケージ（両方のファイル）：
 
 ```powershell
-.\.tools\Install-Packages.ps1 `
+.\.tools\ApprovedPackages\Install-Packages.ps1 `
     -ProjectPath ".\Projects\Project {{PROJECT_DISPLAY_NAME}}" `
     -Target All
 ```
