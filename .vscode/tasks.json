@@ -2,56 +2,82 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "New: VBA×Pythonプロジェクト新規作成",
-            "type": "shell",
+            "label": "Workspace: 新規プロジェクトを作成",
+            "type": "process",
             "command": "powershell.exe",
             "args": [
-                "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", "${workspaceFolder}\\.tools\\New-Project.ps1",
-                "-ProjectName", { "value": "${input:projectName}", "quoting": "strong" },
-                "-PythonVersion", "${input:pythonVersion}"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}",
-                "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
-            },
-            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-            "problemMatcher": []
-        },
-        {
-            "label": "Excel: UserForm情報をCSV出力（アドイン）",
-            "type": "shell",
-            "command": "powershell.exe",
-            "args": [
-                "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass",
-                "-File", "${workspaceFolder}\\.tools\\UserFormCsvExporter\\Export-UserFormCsv.ps1"
+                "-NoProfile",
+                "-File", "${workspaceFolder}\\.tools\\NewProject\\New-Project.ps1"
             ],
             "options": { "cwd": "${workspaceFolder}" },
+            "presentation": { "reveal": "always", "panel": "dedicated", "focus": true, "clear": true },
             "problemMatcher": []
         },
         {
-            "label": "Excel: 編集したUserForm CSVをExcelへ反映",
-            "type": "shell",
+            "label": "Workspace: 許可パッケージを管理",
+            "type": "process",
             "command": "powershell.exe",
             "args": [
-                "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass",
-                "-File", "${workspaceFolder}\\.tools\\UserFormCsvExporter\\Import-UserFormCsv.ps1"
+                "-NoProfile",
+                "-File", "${workspaceFolder}\\.tools\\ApprovedPackages\\Manage-ApprovedPackage.ps1"
             ],
             "options": { "cwd": "${workspaceFolder}" },
+            "presentation": { "reveal": "always", "panel": "dedicated", "focus": true, "clear": true },
             "problemMatcher": []
-        }
-    ],
-    "inputs": [
-        {
-            "id": "projectName",
-            "type": "promptString",
-            "description": "プロジェクト名（Project 接頭辞は自動付与。例: Sample）"
         },
         {
-            "id": "pythonVersion",
-            "type": "promptString",
-            "description": "インストール済みPythonバージョン（3.10以上）",
-            "default": "3.13"
+            "label": "Workspace: 許可パッケージ資料を再生成",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-File", "${workspaceFolder}\\.tools\\ApprovedPackages\\Update-ApprovedPackagesDocument.ps1"
+            ],
+            "options": { "cwd": "${workspaceFolder}" },
+            "presentation": { "reveal": "always", "panel": "dedicated", "focus": true, "clear": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Project: 実行用パッケージを導入",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-File", "${workspaceFolder}\\.tools\\ApprovedPackages\\Install-Packages.ps1",
+                "-SelectProject",
+                "-Target", "Runtime"
+            ],
+            "options": { "cwd": "${workspaceFolder}" },
+            "presentation": { "reveal": "always", "panel": "dedicated", "focus": true, "clear": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Project: 開発用パッケージを導入",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-File", "${workspaceFolder}\\.tools\\ApprovedPackages\\Install-Packages.ps1",
+                "-SelectProject",
+                "-Target", "Development"
+            ],
+            "options": { "cwd": "${workspaceFolder}" },
+            "presentation": { "reveal": "always", "panel": "dedicated", "focus": true, "clear": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Project: すべてのパッケージを導入",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-File", "${workspaceFolder}\\.tools\\ApprovedPackages\\Install-Packages.ps1",
+                "-SelectProject",
+                "-Target", "All"
+            ],
+            "options": { "cwd": "${workspaceFolder}" },
+            "presentation": { "reveal": "always", "panel": "dedicated", "focus": true, "clear": true },
+            "problemMatcher": []
         }
     ]
 }
