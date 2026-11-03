@@ -5,7 +5,7 @@
 .DESCRIPTION
     Groups:
       Unit        - function-level checks (no .venv, no project creation)
-      Tasks       - checks of .vscode\tasks.json (reported as NotReady until it is officially enabled)
+      Tasks       - checks of .vscode\tasks.json
       Integration - project creation in a unique folder under %TEMP% (creates a .venv there,
                     never installs packages, never uses the network)
       All         - runs all groups (default)
@@ -33,7 +33,7 @@ $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimE
 $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
 # Set to $true when .vscode\tasks.json has been updated for the new tools.
-$script:TasksGroupReady = $false
+$script:TasksGroupReady = $true
 $script:Results = New-Object 'System.Collections.Generic.List[object]'
 $script:CreatedRoots = @()
 
@@ -580,7 +580,7 @@ function Invoke-UnitGroup {
 }
 
 # ---------------------------------------------------------------------------
-# Tasks group (NotReady until .vscode\tasks.json is updated for the new tools)
+# Tasks group (checks .vscode\tasks.json)
 # ---------------------------------------------------------------------------
 
 function Invoke-TasksGroup {
