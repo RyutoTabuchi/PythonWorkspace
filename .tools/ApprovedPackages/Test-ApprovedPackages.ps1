@@ -857,7 +857,7 @@ function Invoke-ManageGroup {
             $declined = Invoke-Manage -Root $root -Arguments @('-Action', 'Add', '-Name', 'brandnew', '-VersionList', '1.*', '-Status', 'approved', '-Today', '2026-05-06', '-ConfirmAnswer', 'N')
             Assert-True ($declined.ExitCode -eq 2) ('Declined exit code was ' + $declined.ExitCode)
             Assert-True ((Get-Sha256 -Path $jsonPath) -ceq $before) 'The file changed after declining.'
-            Assert-True (-not (Test-Path -LiteralPath (Join-Path $root.Path 'approved-packages.md'))) 'The document was written after declining.'
+            Assert-True ((Get-Sha256 -Path (Join-Path $root.Path 'approved-packages.md')) -ceq (Get-Sha256 -Path $realPaths.MarkdownPath)) 'The startup-generated document differs from the unchanged list.'
             $saved = Invoke-Manage -Root $root -Arguments @('-Action', 'Add', '-Name', 'brandnew', '-VersionList', '1.*', '-Status', 'approved', '-Today', '2026-05-06', '-SkipConfirmation')
             Assert-True ($saved.ExitCode -eq 0) ('Exit code ' + $saved.ExitCode + ': ' + $saved.Output)
             $packages = Read-DataRootPackages -Root $root
@@ -944,6 +944,38 @@ function Invoke-ManageGroup {
             Assert-True ((Invoke-Manage -Root $root -Arguments @('-Action', 'RegenerateDocument')).ExitCode -eq 0) 'RegenerateDocument'
             Assert-True ((Get-Sha256 -Path $jsonPath) -ceq $before) 'The list changed.'
             Assert-True ((Get-Sha256 -Path (Join-Path $root.Path 'approved-packages.md')) -ceq (Get-Sha256 -Path $realPaths.MarkdownPath)) 'The document differs from the real one.'
+        } finally { Remove-DataRoot -Entry $root }
+    }
+    Invoke-Check $g 'Child process: missing JSON and Markdown are initialized; a missing Markdown is regenerated' {
+        $root = New-DataRoot
+        try {
+            $run = Invoke-Manage -Root $root -Arguments @('-Action', 'Show')
+            Assert-True ($run.ExitCode -eq 0) ('Initialization failed: ' + $run.Output)
+            $jsonPath = Join-Path $root.Path 'approved-packages.json'
+            $mdPath = Join-Path $root.Path 'approved-packages.md'
+            Assert-True ((Test-Path -LiteralPath $jsonPath -PathType Leaf) -and (Test-Path -LiteralPath $mdPath -PathType Leaf)) 'The missing files were not created.'
+            $read = Read-ApprovedPackageList -Path $jsonPath
+            Assert-True ($read.Success -and $read.Data.schemaVersion -eq 1 -and @($read.Data.packages).Count -eq 0) 'The initial JSON is not an empty schema-version-1 list.'
+            Assert-True (@(Test-ApprovedPackageList -Data $read.Data).Count -eq 0) 'The initial JSON is invalid.'
+            $labels = [pscustomobject]@{
+                NoticeLines = @($toolMessages.MdNotice); Title = $toolMessages.MdTitle; HeaderName = $toolMessages.MdHeaderName
+                HeaderVersions = $toolMessages.MdHeaderVersions; HeaderStatus = $toolMessages.MdHeaderStatus
+                HeaderApprovedDate = $toolMessages.MdHeaderApprovedDate; HeaderPurpose = $toolMessages.MdHeaderPurpose
+                HeaderNotes = $toolMessages.MdHeaderNotes; NoVersions = $toolMessages.MdNoVersions
+            }
+            $expected = ConvertTo-ApprovedPackagesMarkdown -Packages @() -Labels $labels
+            $actual = [System.IO.File]::ReadAllText($mdPath, (New-Object System.Text.UTF8Encoding($false, $true)))
+            Assert-True ($actual -ceq $expected) 'The initial Markdown does not match the empty list.'
+        } finally { Remove-DataRoot -Entry $root }
+
+        $root = New-DataRoot -CopyRealData
+        try {
+            $jsonPath = Join-Path $root.Path 'approved-packages.json'
+            $before = Get-Sha256 -Path $jsonPath
+            $run = Invoke-Manage -Root $root -Arguments @('-Action', 'Show')
+            Assert-True ($run.ExitCode -eq 0) ('Markdown regeneration failed: ' + $run.Output)
+            Assert-True ((Get-Sha256 -Path $jsonPath) -ceq $before) 'Regenerating Markdown changed the JSON.'
+            Assert-True ((Get-Sha256 -Path (Join-Path $root.Path 'approved-packages.md')) -ceq (Get-Sha256 -Path $realPaths.MarkdownPath)) 'The regenerated Markdown differs from the source JSON.'
         } finally { Remove-DataRoot -Entry $root }
     }
     Invoke-Check $g 'Child process: invalid list stops every operation (exit 1, no write)' {
@@ -1147,7 +1179,7 @@ function Invoke-ToolsGroup {
         } finally { Pop-Location }
     }
     Invoke-Check $g 'No backup, history, or log files are created next to the data files' {
-        $names = @(Get-ChildItem -LiteralPath $realPaths.DataDirectory -Force | ForEach-Object { $_.Name } | Sort-Object)
+        $names = @(Get-ChildItem -LiteralPath $realPaths.DataDirectory -Force | Where-Object { $_.Name -cne '.gitkeep' } | ForEach-Object { $_.Name } | Sort-Object)
         Assert-True (($names -join '|') -ceq 'approved-packages.json|approved-packages.md') ('Unexpected files: ' + ($names -join ', '))
     }
 }

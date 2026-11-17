@@ -400,6 +400,19 @@ function Invoke-DocumentRegeneration {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Initialize-ApprovedPackageFiles {
+    $jsonCreated = $false
+    if (-not (Test-Path -LiteralPath $script:MgrPaths.JsonPath -PathType Leaf)) {
+        Write-ApprovedPackageList -Path $script:MgrPaths.JsonPath -Packages @()
+        $jsonCreated = $true
+    }
+
+    [void](Read-ValidatedPackages)
+    if ($jsonCreated -or -not (Test-Path -LiteralPath $script:MgrPaths.MarkdownPath -PathType Leaf)) {
+        if (-not (Invoke-DocumentRegeneration)) { throw (Get-MgrMsg 'MgrDocFailed') }
+    }
+}
+
 function Invoke-ManageOperation {
     param(
         [string]$ActionName,
@@ -507,6 +520,7 @@ function Invoke-ManageMain {
             throw ((Get-MgrMsg 'MgrErrTestModeOnly' @($names)) + [Environment]::NewLine + (Get-MgrMsg 'MgrUsage'))
         }
         $script:MgrPaths = $paths
+        Initialize-ApprovedPackageFiles
         return (Invoke-ManageMenu)
     }
 
@@ -522,6 +536,7 @@ function Invoke-ManageMain {
         throw (Get-MgrMsg 'MgrErrTodayInvalid' @($script:MgrTodayOverride))
     }
     $script:MgrPaths = Get-ApprovedPackagesPaths -DataDirectory $resolved
+    Initialize-ApprovedPackageFiles
     $arguments = @{ Name = $Name; Value = $Value; VersionList = $VersionList; Status = $Status; Purpose = $Purpose; Notes = $Notes }
     return (Invoke-ManageOperation -ActionName $Action -Arguments $arguments)
 }
