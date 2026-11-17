@@ -8,10 +8,12 @@ PythonWorkspaceでは、次の2種類のGitリポジトリを別々に管理し�
 
 | リポジトリ | 場所 | 管理するもの |
 | --- | --- | --- |
-| ワークスペース基盤 | PythonWorkspace直下 | `.github/`、`.tools/`、`.vscode/`、`ApprovedPackages/`、`Projects/_Template_Python/`、`Reports/`、直下の文書など |
+| ワークスペース基盤 | PythonWorkspace直下 | `.github/`、`.tools/`、`.vscode/`、`Projects/_Template_Python/`、`Reports/`、直下の文書など |
 | 各プロジェクト | `Projects/Project 表示名/` | そのプロジェクトのソース、README、依存関係ファイルなど |
 
 基盤のリポジトリは `Projects/Project */` を管理しません。各プロジェクトのリポジトリは、プロジェクト作成時に `git init -b main` で作成されます。
+
+`ApprovedPackages/` のデータもGit管理外です。新規クローン時の準備と既存環境での注意は[ワークスペースREADME](README.md)を参照してください。
 
 そのため、VS Codeのソース管理に複数のリポジトリが表示される状態は正常です。**コミットする前に、操作対象のリポジトリ名を必ず確認してください。** ターミナルで実行するGitコマンドは、現在のフォルダーが属するリポジトリが対象になります。
 

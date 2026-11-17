@@ -11,7 +11,7 @@ PythonWorkspace/
   .github/                 GitHub Copilot向けの共通指示
   .tools/                  プロジェクト作成・許可パッケージ管理の共通ツール
   .vscode/                 共通のVS Codeタスクと設定
-  ApprovedPackages/        許可パッケージの正式データと一覧資料
+  ApprovedPackages/        許可パッケージの正式データと一覧資料（.gitkeepのみGit管理）
   Projects/
     _Template_Python/      プロジェクト作成用テンプレート
     Project 表示名/        作成したプロジェクト（独立したGitリポジトリ）
@@ -52,7 +52,11 @@ Projects/Project 表示名/
 
 ## パッケージを導入する
 
-導入できるのは、`ApprovedPackages/approved-packages.json` で許可済みのパッケージだけです。許可パッケージの一覧は [ApprovedPackages/approved-packages.md](ApprovedPackages/approved-packages.md) で確認できます。許可パッケージの登録・変更はワークスペース管理者が行います。
+導入できるのは、`ApprovedPackages/approved-packages.json` で許可済みのパッケージだけです。許可パッケージの一覧は、ローカルの `ApprovedPackages/approved-packages.md` で確認できます。許可パッケージの登録・変更はワークスペース管理者が行います。
+
+`ApprovedPackages/` はフォルダー維持用の `.gitkeep` のみGit管理し、許可リストのデータは管理しません。`Workspace: 許可パッケージを管理` タスクを起動すると、JSONがなければ空の許可リストを作成し、MarkdownがなければJSONから生成します。JSONが壊れている場合は自動修復・上書きせずエラーにします。新しくクローンした場合、空のリストには許可パッケージが登録されていないため、ワークスペース管理者から最新版の `approved-packages.json` を入手するか、管理者が許可パッケージを登録してください。
+
+既存環境で一覧の追跡解除を含む変更を取り込む前に、`ApprovedPackages/` をワークスペースの外へ退避してください。Gitによって追跡中だったファイルが作業ツリーから削除される場合があるため、取り込み後に元の場所へ戻します。
 
 1. プロジェクトの `requirements.txt`（実行用）または `requirements-dev.txt`（開発用）へ、`package` または `package==version` の形式で記載します。
 2. 「ターミナル」→「タスクの実行」から、次のいずれかを選びます。対象プロジェクトは一覧から番号で選択します。

@@ -15,7 +15,7 @@
 | `Projects/Project 表示名/source/` | Pythonの本番ソースを置きます。実行ファイルは `source/main.py` です。 |
 | `Projects/Project 表示名/tests/` | 自動テスト（`automated/`）と、本番採用前の試作・調査（`experiments/`）を置きます。 |
 | `Projects/Project 表示名/requirements.txt` | 実行用パッケージを記載します。開発用は `requirements-dev.txt` です。 |
-| `ApprovedPackages/` | 許可パッケージの正式データ（`approved-packages.json`）と、自動生成する一覧資料（`approved-packages.md`）を置きます。 |
+| `ApprovedPackages/` | 許可パッケージの正式データ（`approved-packages.json`）と、自動生成する一覧資料（`approved-packages.md`）を置きます。データはGit管理外で、フォルダー維持用の `.gitkeep` のみ管理します。 |
 | `.vscode/` | ワークスペース共通のVS Codeタスクと設定を置きます。 |
 | `.tools/` | プロジェクト作成と許可パッケージの管理・導入のツールを置きます。 |
 | `.github/` | GitHub Copilot向けの共通指示を置きます。 |
@@ -62,6 +62,6 @@
 - [ワークスペースREADME](README.md)
 - [プロジェクトテンプレートのREADME](Projects/_Template_Python/README.md)
 - [共通ツール](.tools/README.md)
-- [許可パッケージ一覧](ApprovedPackages/approved-packages.md)
+- 許可パッケージ一覧: ローカルの `ApprovedPackages/approved-packages.md`
 - [新人向け開発手順書](新人向け開発手順書.md)
 - [Git管理ガイド](Git%20管理ガイド.md)
