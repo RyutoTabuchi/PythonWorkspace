@@ -1,6 +1,10 @@
 # Project実体は各Project repoで管理する
 Project */
 
+# 許可パッケージ一覧はローカル管理する（.gitkeepのみ管理）
+/ApprovedPackages/*
+!/ApprovedPackages/.gitkeep
+
 # サンプルデータの中身はGit管理しない（.gitkeepのみ管理）
 SampleDatas/*
 !SampleDatas/.gitkeep
